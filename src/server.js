@@ -99,7 +99,7 @@ function getConfigValue(envVar, secretName = null) {
   return process.env[envVar] || '';
 }
 
-// instanceId → [{ index, providerName, label, wgKey, wgAddresses, wgPsk }]
+// instanceId → [{ index, providerName, vpnType, label, ...credentials }]
 // Populated by parseInstances(); credentials never sent to the client.
 const providerConfigs = new Map();
 
@@ -114,16 +114,40 @@ function parseProviders(prefix) {
   for (let p = 1; p <= 10; p++) {
     const name = getConfigValue(`${prefix}_PROVIDER_${p}`, `${prefix.toLowerCase()}_provider_${p}`);
     if (!name) continue;
-    const wgKey = getConfigValue(`${prefix}_PROVIDER_${p}_WG_KEY`, `${prefix.toLowerCase()}_provider_${p}_wg_key`);
-    if (!wgKey) { console.warn(`[config] ${prefix}_PROVIDER_${p} has no WG_KEY — skipping`); continue; }
-    list.push({
-      index: p,
-      providerName: name.toLowerCase(),
-      label: process.env[`${prefix}_PROVIDER_${p}_LABEL`] || titleCase(name),
-      wgKey,
-      wgAddresses: process.env[`${prefix}_PROVIDER_${p}_WG_ADDRESSES`] ?? null,
-      wgPsk: getConfigValue(`${prefix}_PROVIDER_${p}_WG_PSK`, `${prefix.toLowerCase()}_provider_${p}_wg_psk`) || null,
-    });
+
+    const vpnType = (process.env[`${prefix}_PROVIDER_${p}_VPN_TYPE`] || 'wireguard').toLowerCase();
+    const label   = process.env[`${prefix}_PROVIDER_${p}_LABEL`] || titleCase(name);
+    const base    = { index: p, providerName: name.toLowerCase(), vpnType, label };
+
+    if (vpnType === 'wireguard') {
+      const wgKey = getConfigValue(`${prefix}_PROVIDER_${p}_WG_KEY`, `${prefix.toLowerCase()}_provider_${p}_wg_key`);
+      if (!wgKey) { console.warn(`[config] ${prefix}_PROVIDER_${p} missing WG_KEY — skipping`); continue; }
+      list.push({
+        ...base,
+        wgKey,
+        wgAddresses: process.env[`${prefix}_PROVIDER_${p}_WG_ADDRESSES`] ?? null,
+        wgPsk: getConfigValue(`${prefix}_PROVIDER_${p}_WG_PSK`, `${prefix.toLowerCase()}_provider_${p}_wg_psk`) || null,
+      });
+    } else if (vpnType === 'openvpn') {
+      const g = (key, secret) => getConfigValue(`${prefix}_PROVIDER_${p}_${key}`, `${prefix.toLowerCase()}_provider_${p}_${secret}`);
+      const ovpnUser = g('OVPN_USER', 'ovpn_user');
+      const ovpnCert = g('OVPN_CERT', 'ovpn_cert');
+      if (!ovpnUser && !ovpnCert) {
+        console.warn(`[config] ${prefix}_PROVIDER_${p} (openvpn) has no credentials — skipping`);
+        continue;
+      }
+      list.push({
+        ...base,
+        ovpnUser,
+        ovpnPassword:      g('OVPN_PASSWORD',      'ovpn_password'),
+        ovpnCert,
+        ovpnKey:           g('OVPN_KEY',            'ovpn_key'),
+        ovpnEncryptedKey:  g('OVPN_ENCRYPTED_KEY',  'ovpn_encrypted_key'),
+        ovpnKeyPassphrase: g('OVPN_KEY_PASSPHRASE', 'ovpn_key_passphrase'),
+      });
+    } else {
+      console.warn(`[config] ${prefix}_PROVIDER_${p}_VPN_TYPE=${vpnType} unknown — skipping`);
+    }
   }
   return list;
 }
@@ -308,8 +332,8 @@ app.get('/api/instances', (req, res) => {
   res.json(instances.map(({ id, name }) => ({
     id,
     name,
-    providers: (providerConfigs.get(id) ?? []).map(({ index, providerName, label }) =>
-      ({ index, providerName, label })
+    providers: (providerConfigs.get(id) ?? []).map(({ index, providerName, label, vpnType }) =>
+      ({ index, providerName, label, vpnType })
     ),
   })));
 });
@@ -417,7 +441,7 @@ app.get('/api/:instanceId/servers', async (req, res) => {
     const cfg = (providerConfigs.get(instance.id) ?? []).find(p => p.index === providerIndex);
     if (!cfg) return res.status(400).json({ ok: false, error: 'Provider not found' });
     providerName = cfg.providerName;
-    vpnType = 'wireguard';
+    vpnType = cfg.vpnType;
   } else {
     let settings;
     try {
@@ -519,15 +543,33 @@ app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
   if (providerIndex !== null) {
     const cfg = (providerConfigs.get(instance.id) ?? []).find(p => p.index === providerIndex);
     if (!cfg) return res.status(400).json({ ok: false, error: 'Provider not found' });
-    const wireguard = {
-      private_key: cfg.wgKey,
-      addresses: cfg.wgAddresses ? cfg.wgAddresses.split(',').map(s => s.trim()) : [],
-      pre_shared_key: cfg.wgPsk ?? '',
-    };
+
+    let credentialBlock;
+    if (cfg.vpnType === 'wireguard') {
+      credentialBlock = {
+        wireguard: {
+          private_key:    cfg.wgKey,
+          addresses:      cfg.wgAddresses ? cfg.wgAddresses.split(',').map(s => s.trim()) : [],
+          pre_shared_key: cfg.wgPsk ?? '',
+        },
+      };
+    } else {
+      credentialBlock = {
+        openvpn: {
+          user:           cfg.ovpnUser          ?? '',
+          password:       cfg.ovpnPassword      ?? '',
+          cert:           cfg.ovpnCert          ?? '',
+          key:            cfg.ovpnKey           ?? '',
+          encrypted_key:  cfg.ovpnEncryptedKey  ?? '',
+          key_passphrase: cfg.ovpnKeyPassphrase ?? '',
+        },
+      };
+    }
+
     upstream = {
-      type: 'wireguard',
-      provider: { name: cfg.providerName, server_selection: { vpn: 'wireguard', ...geoSels, hostnames, ...booleans } },
-      wireguard,
+      type: cfg.vpnType,
+      provider: { name: cfg.providerName, server_selection: { vpn: cfg.vpnType, ...geoSels, hostnames, ...booleans } },
+      ...credentialBlock,
     };
   } else {
     upstream = { provider: { server_selection: { ...geoSels, hostnames, ...booleans } } };
