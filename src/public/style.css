@@ -309,6 +309,32 @@ main {
 .btn-apply:hover:not(:disabled) { background: rgba(96,165,250,0.15); }
 .btn-apply:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.bool-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  margin-top: 0.2rem;
+}
+.bool-filters:empty { display: none; }
+.bool-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bool-filter-row input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--blue);
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 600px) {
   .header-inner { flex-direction: column; align-items: flex-start; }

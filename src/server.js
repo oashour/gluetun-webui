@@ -9,6 +9,17 @@ app.disable('x-powered-by');
 const PORT = process.env.PORT || 3000;
 const SERVERS_JSON_PATH = process.env.SERVERS_JSON_PATH || '/gluetun/servers.json';
 
+const BOOLEAN_FILTER_MAP = [
+  { field: 'owned',        key: 'owned_only',        label: 'Owned only' },
+  { field: 'free',         key: 'free_only',         label: 'Free only' },
+  { field: 'premium',      key: 'premium_only',      label: 'Premium only' },
+  { field: 'stream',       key: 'stream_only',       label: 'Stream only' },
+  { field: 'multihop',     key: 'multi_hop_only',    label: 'Multi-hop only' },
+  { field: 'port_forward', key: 'port_forward_only', label: 'Port forward only' },
+  { field: 'secure_core',  key: 'secure_core_only',  label: 'Secure core only' },
+  { field: 'tor',          key: 'tor_only',          label: 'Tor only' },
+];
+
 // --- Docker Secrets Support ---
 // Try to read from /run/secrets/ (Docker Swarm/Compose secrets), fall back to env vars
 function getConfigValue(envVar, secretName = null) {
@@ -348,7 +359,11 @@ app.get('/api/:instanceId/servers', async (req, res) => {
     byCountry[country] = { cities, byCity };
   }
 
-  res.json({ ok: true, provider: providerName, countries, byCountry });
+  const booleanFilters = BOOLEAN_FILTER_MAP
+    .filter(({ field }) => servers.some(s => s[field] === true))
+    .map(({ key, label }) => ({ key, label }));
+
+  res.json({ ok: true, provider: providerName, countries, byCountry, booleanFilters });
 });
 
 // --- Per-instance VPN settings (server selection) ---
@@ -357,13 +372,20 @@ app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
   const instance = resolveInstance(req.params.instanceId);
   if (!instance) return res.status(400).json({ ok: false, error: 'Unknown instance ID' });
 
-  const { countries = [], cities = [], hostnames = [] } = req.body ?? {};
+  const { countries = [], cities = [], hostnames = [], booleans = {} } = req.body ?? {};
   const isStrArr = v => Array.isArray(v) && v.every(x => typeof x === 'string');
   if (!isStrArr(countries) || !isStrArr(cities) || !isStrArr(hostnames)) {
     return res.status(400).json({ ok: false, error: 'countries, cities, and hostnames must each be arrays of strings' });
   }
+  const allowedBoolKeys = new Set(BOOLEAN_FILTER_MAP.map(f => f.key));
+  if (
+    typeof booleans !== 'object' || Array.isArray(booleans) || booleans === null ||
+    Object.entries(booleans).some(([k, v]) => !allowedBoolKeys.has(k) || typeof v !== 'boolean')
+  ) {
+    return res.status(400).json({ ok: false, error: 'Invalid booleans object' });
+  }
 
-  const upstream = { provider: { server_selection: { countries, cities, hostnames } } };
+  const upstream = { provider: { server_selection: { countries, cities, hostnames, ...booleans } } };
   try {
     const text = await gluetunFetchText(instance, '/v1/vpn/settings', 'PUT', upstream);
     res.json({ ok: true, message: text });

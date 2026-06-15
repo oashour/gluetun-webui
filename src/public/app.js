@@ -157,11 +157,12 @@ function buildDashboardGroup(inst) {
             </select>
           </div>
           <div class="stat-row selector-row">
-            <span class="stat-label">Server</span>
+            <span class="stat-label">Hostname</span>
             <select id="i${id}-sel-hostname" class="server-select" disabled>
               <option value="">–</option>
             </select>
           </div>
+          <div class="bool-filters" id="i${id}-bool-filters"></div>
           <div class="server-selector-footer">
             <button id="i${id}-sel-apply" class="btn-apply" disabled>Apply</button>
           </div>
@@ -386,6 +387,17 @@ function populateServerSelector(instanceId, data) {
   });
   countryEl.disabled = false;
   if (applyBtn) applyBtn.disabled = false;
+
+  const boolContainer = $(`i${instanceId}-bool-filters`);
+  if (boolContainer) {
+    boolContainer.innerHTML = '';
+    (data.booleanFilters ?? []).forEach(({ key, label }) => {
+      const row = document.createElement('label');
+      row.className = 'bool-filter-row';
+      row.innerHTML = `<input type="checkbox" id="i${instanceId}-bool-${escHtml(key)}"> ${escHtml(label)}`;
+      boolContainer.appendChild(row);
+    });
+  }
 }
 
 async function loadServerData(instanceId) {
@@ -414,6 +426,12 @@ async function applyServerSelection(instanceId) {
   const countries = countryEl?.value  ? [countryEl.value]  : [];
   const cities    = cityEl?.value     ? [cityEl.value]     : [];
   const hostnames = hostnameEl?.value ? [hostnameEl.value] : [];
+  const data = serverDataCache.get(instanceId);
+  const booleans = {};
+  (data?.booleanFilters ?? []).forEach(({ key }) => {
+    const el = $(`i${instanceId}-bool-${key}`);
+    if (el) booleans[key] = el.checked;
+  });
 
   applyBtn.disabled    = true;
   applyBtn.textContent = 'Applying…';
@@ -423,7 +441,7 @@ async function applyServerSelection(instanceId) {
     const res  = await fetch(`/api/${instanceId}/vpn/settings`, {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ countries, cities, hostnames }),
+      body:    JSON.stringify({ countries, cities, hostnames, booleans }),
     });
     const data = await res.json();
     if (data.ok) {
