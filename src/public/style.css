@@ -306,6 +306,18 @@ main {
   font-size: 0.85rem;
   white-space: nowrap;
 }
+.sel-count {
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.42rem;
+  min-width: 1.6em;
+  text-align: center;
+  flex-shrink: 0;
+  line-height: 1.5;
+}
 .sel-summary {
   flex: 1;
   color: var(--blue);

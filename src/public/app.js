@@ -162,6 +162,7 @@ function buildDashboardGroup(inst) {
           <div class="sel-acc-item" id="i${id}-acc-country">
             <div class="sel-acc-header">
               <span class="sel-acc-label">Country</span>
+              <span class="sel-count" id="i${id}-country-count"></span>
               <span class="sel-summary sel-summary-any" id="i${id}-sel-country-summary">Any</span>
               <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
               <span class="sel-acc-arrow">&#9660;</span>
@@ -173,6 +174,7 @@ function buildDashboardGroup(inst) {
           <div class="sel-acc-item" id="i${id}-acc-city">
             <div class="sel-acc-header">
               <span class="sel-acc-label">City</span>
+              <span class="sel-count" id="i${id}-city-count"></span>
               <span class="sel-summary sel-summary-any" id="i${id}-sel-city-summary">Any</span>
               <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
               <span class="sel-acc-arrow">&#9660;</span>
@@ -184,6 +186,7 @@ function buildDashboardGroup(inst) {
           <div class="sel-acc-item" id="i${id}-acc-hostname">
             <div class="sel-acc-header">
               <span class="sel-acc-label">Server</span>
+              <span class="sel-count" id="i${id}-hostname-count"></span>
               <span class="sel-summary sel-summary-any" id="i${id}-sel-hostname-summary">Any</span>
               <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
               <span class="sel-acc-arrow">&#9660;</span>
@@ -417,6 +420,21 @@ function getHostnamesForCity(data, city) {
   return [];
 }
 
+function getCityCountry(data, city) {
+  for (const [country, { byCity }] of Object.entries(data.byCountry)) {
+    if (byCity[city]) return country;
+  }
+  return '';
+}
+
+function updateCount(instanceId, level) {
+  const selectEl = $(`i${instanceId}-sel-${level}`);
+  const countEl  = $(`i${instanceId}-${level}-count`);
+  if (!countEl || !selectEl) return;
+  const count = [...selectEl.options].filter(o => !o.disabled).length;
+  countEl.textContent = count > 0 ? String(count) : '';
+}
+
 function getCheckedBooleans(instanceId, data) {
   return (data?.booleanFilters ?? [])
     .filter(({ key }) => $(`i${instanceId}-bool-${key}`)?.dataset.active === 'true')
@@ -575,6 +593,7 @@ function onBooleanChange(instanceId) {
     });
 
   updateIspChip(instanceId);
+  updateCount(instanceId, 'country');
   onCountryChange(instanceId);
 }
 
@@ -586,10 +605,10 @@ function onCountryChange(instanceId) {
   const filters   = getFilters(instanceId, data);
 
   cityEl.innerHTML = '';
-  if (!data || !selected.length) {
-    cityEl.add(Object.assign(new Option('Select a country first', ''), { disabled: true }));
-  } else {
-    selected.forEach(country => {
+  if (data) {
+    // "any" → show all viable countries; specific selection → show only selected
+    const scope = selected.length ? selected : data.countries.filter(c => countryHasViableServers(data, c, filters));
+    scope.forEach(country => {
       if (!data.byCountry[country]) return;
       const viableCities = data.byCountry[country].cities
         .filter(city => cityHasViableServers(data, city, filters));
@@ -599,10 +618,10 @@ function onCountryChange(instanceId) {
       viableCities.forEach(c => grp.appendChild(new Option(c, c)));
       cityEl.appendChild(grp);
     });
-    if (!cityEl.options.length)
-      cityEl.add(Object.assign(new Option('No cities match current filters', ''), { disabled: true }));
   }
+
   updateSelSummary(instanceId, 'country');
+  updateCount(instanceId, 'city');
   onCityChange(instanceId);
 }
 
@@ -614,23 +633,37 @@ function onCityChange(instanceId) {
   const filters    = getFilters(instanceId, data);
 
   hostnameEl.innerHTML = '';
-  if (!data || !selected.length) {
-    hostnameEl.add(Object.assign(new Option('Select a city first', ''), { disabled: true }));
-  } else {
-    selected.forEach(city => {
+  if (data) {
+    const addCityGroup = city => {
       let hostnames = getHostnamesForCity(data, city);
-      if (filters.checkedBools.length || filters.selectedIsps.length) {
+      if (filters.checkedBools.length || filters.selectedIsps.length)
         hostnames = hostnames.filter(h => hostnameMatchesFilters(data, h, filters));
-      }
       if (!hostnames.length) return;
+      const country = getCityCountry(data, city);
       const grp = document.createElement('optgroup');
-      grp.label = city;
+      grp.label = country ? `${city}, ${country}` : city;
       hostnames.forEach(h => grp.appendChild(new Option(data.hostnameLabels?.[h] ?? h, h)));
       hostnameEl.appendChild(grp);
-    });
+    };
+
+    if (selected.length) {
+      selected.forEach(addCityGroup);
+    } else {
+      // "any": scope to selected countries (or all if none selected)
+      const countryEl      = $(`i${instanceId}-sel-country`);
+      const selCountries   = countryEl ? [...countryEl.selectedOptions].map(o => o.value) : [];
+      const countryScope   = selCountries.length ? selCountries : data.countries.filter(c => countryHasViableServers(data, c, filters));
+      countryScope.forEach(country => {
+        (data.byCountry[country]?.cities ?? [])
+          .filter(city => cityHasViableServers(data, city, filters))
+          .forEach(addCityGroup);
+      });
+    }
   }
+
   updateSelSummary(instanceId, 'city');
   updateSelSummary(instanceId, 'hostname');
+  updateCount(instanceId, 'hostname');
 }
 
 function populateServerSelector(instanceId, data, currentSel = {}) {
@@ -645,6 +678,7 @@ function populateServerSelector(instanceId, data, currentSel = {}) {
   countryEl.disabled = false;
   [...countryEl.options].forEach(o => { o.selected = countries.includes(o.value); });
 
+  updateCount(instanceId, 'country');
   onCountryChange(instanceId);
 
   const cityEl = $(`i${instanceId}-sel-city`);
