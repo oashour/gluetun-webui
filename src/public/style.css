@@ -297,6 +297,21 @@ main {
   border-bottom: 1px solid var(--border);
   padding-bottom: 0.5rem;
 }
+.sel-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.sel-summary {
+  color: var(--blue);
+  font-size: 0.78rem;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 65%;
+}
 
 .server-select { width: 100%; min-width: 0; }
 .server-select:disabled { opacity: 0.45; cursor: not-allowed; }

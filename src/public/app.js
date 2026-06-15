@@ -146,15 +146,24 @@ function buildDashboardGroup(inst) {
             <span class="stat-value" id="i${id}-sel-provider">–</span>
           </div>
           <div class="sel-group">
-            <span class="stat-label">Country</span>
+            <div class="sel-group-header">
+              <span class="stat-label">Country</span>
+              <span class="sel-summary" id="i${id}-sel-country-summary"></span>
+            </div>
             <select multiple size="6" id="i${id}-sel-country" class="server-select" disabled></select>
           </div>
           <div class="sel-group">
-            <span class="stat-label">City</span>
+            <div class="sel-group-header">
+              <span class="stat-label">City</span>
+              <span class="sel-summary" id="i${id}-sel-city-summary"></span>
+            </div>
             <select multiple size="6" id="i${id}-sel-city" class="server-select" disabled></select>
           </div>
           <div class="sel-group">
-            <span class="stat-label">Hostname</span>
+            <div class="sel-group-header">
+              <span class="stat-label">Hostname</span>
+              <span class="sel-summary" id="i${id}-sel-hostname-summary"></span>
+            </div>
             <select multiple size="6" id="i${id}-sel-hostname" class="server-select" disabled></select>
           </div>
           <div class="bool-filters" id="i${id}-bool-filters"></div>
@@ -187,6 +196,7 @@ function buildDashboardGroup(inst) {
   group.querySelector(`#i${id}-btn-stop`).addEventListener('click', () => vpnAction(id, 'stop'));
   group.querySelector(`#i${id}-sel-country`).addEventListener('change', () => onCountryChange(id));
   group.querySelector(`#i${id}-sel-city`).addEventListener('change', () => onCityChange(id));
+  group.querySelector(`#i${id}-sel-hostname`).addEventListener('change', () => updateSelSummary(id, 'hostname'));
   group.querySelector(`#i${id}-sel-apply`).addEventListener('click', () => applyServerSelection(id));
   return group;
 }
@@ -340,6 +350,14 @@ async function vpnAction(instanceId, action) {
 
 // ---- Server selector ----
 
+function updateSelSummary(instanceId, level) {
+  const el      = $(`i${instanceId}-sel-${level}`);
+  const summary = $(`i${instanceId}-sel-${level}-summary`);
+  if (!el || !summary) return;
+  const selected = [...el.selectedOptions].map(o => o.value);
+  summary.textContent = selected.length ? selected.join(', ') : '';
+}
+
 function getHostnamesForCity(data, city) {
   for (const { byCity } of Object.values(data.byCountry)) {
     if (byCity[city]) return byCity[city];
@@ -391,6 +409,7 @@ function onCountryChange(instanceId) {
       cityEl.appendChild(grp);
     });
   }
+  updateSelSummary(instanceId, 'country');
   onCityChange(instanceId);
 }
 
@@ -413,6 +432,8 @@ function onCityChange(instanceId) {
       hostnameEl.appendChild(grp);
     });
   }
+  updateSelSummary(instanceId, 'city');
+  updateSelSummary(instanceId, 'hostname');
 }
 
 function populateServerSelector(instanceId, data, currentSel = {}) {
