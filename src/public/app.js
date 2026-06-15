@@ -6,7 +6,8 @@ const VALID_STATES = new Set(['connected', 'paused', 'disconnected', 'unknown'])
 let instances    = [];   // [{ id, name }] from /api/instances
 let isPolling    = false;
 let refreshTimer = null;
-const serverDataCache = new Map(); // instanceId -> server data from /api/:id/servers
+const serverDataCache    = new Map(); // instanceId -> server data from /api/:id/servers
+const serverSelectorReady = new Set(); // guard: pre-populate only once per instance
 
 // ---- Utility ----
 
@@ -144,26 +145,21 @@ function buildDashboardGroup(inst) {
             <span class="stat-label">Provider</span>
             <span class="stat-value" id="i${id}-sel-provider">–</span>
           </div>
-          <div class="stat-row selector-row">
+          <div class="sel-group">
             <span class="stat-label">Country</span>
-            <select id="i${id}-sel-country" class="server-select" disabled>
-              <option value="">Loading…</option>
-            </select>
+            <select multiple size="6" id="i${id}-sel-country" class="server-select" disabled></select>
           </div>
-          <div class="stat-row selector-row">
+          <div class="sel-group">
             <span class="stat-label">City</span>
-            <select id="i${id}-sel-city" class="server-select" disabled>
-              <option value="">–</option>
-            </select>
+            <select multiple size="6" id="i${id}-sel-city" class="server-select" disabled></select>
           </div>
-          <div class="stat-row selector-row">
+          <div class="sel-group">
             <span class="stat-label">Hostname</span>
-            <select id="i${id}-sel-hostname" class="server-select" disabled>
-              <option value="">–</option>
-            </select>
+            <select multiple size="6" id="i${id}-sel-hostname" class="server-select" disabled></select>
           </div>
           <div class="bool-filters" id="i${id}-bool-filters"></div>
           <div class="server-selector-footer">
+            <small class="sel-hint">Ctrl/Cmd+click to select multiple. Nothing selected = Any.</small>
             <button id="i${id}-sel-apply" class="btn-apply" disabled>Apply</button>
           </div>
         </div>
@@ -248,7 +244,7 @@ function updatePanel(inst, health) {
 
   setEl(`i${id}-vpn-status`,   d?.status ?? '–');
   setEl(`i${id}-vpn-provider`, s?.provider?.name ?? '–');
-  if (s?.provider?.name) loadServerData(id);
+  if (s?.provider?.name) loadServerData(id, s.provider.server_selection ?? {});
   setEl(`i${id}-vpn-protocol`, s?.type ?? '–');
   setEl(`i${id}-vpn-server`,
     ip?.hostname
@@ -344,48 +340,106 @@ async function vpnAction(instanceId, action) {
 
 // ---- Server selector ----
 
-function onCountryChange(instanceId) {
-  const data       = serverDataCache.get(instanceId);
-  const cityEl     = $(`i${instanceId}-sel-city`);
-  const hostnameEl = $(`i${instanceId}-sel-hostname`);
-  const country    = $(`i${instanceId}-sel-country`)?.value ?? '';
-
-  cityEl.innerHTML     = '<option value="">Any</option>';
-  hostnameEl.innerHTML = '<option value="">Any</option>';
-
-  if (data && country && data.byCountry[country]) {
-    data.byCountry[country].cities.forEach(c => cityEl.appendChild(new Option(c, c)));
+function getHostnamesForCity(data, city) {
+  for (const { byCity } of Object.values(data.byCountry)) {
+    if (byCity[city]) return byCity[city];
   }
+  return [];
+}
 
+function buildReverseMaps(data) {
+  const cityToCountry = {}, hostnameToCity = {};
+  for (const [country, { byCity }] of Object.entries(data.byCountry)) {
+    for (const [city, hostnames] of Object.entries(byCity)) {
+      cityToCountry[city] = country;
+      for (const h of hostnames) hostnameToCity[h] = city;
+    }
+  }
+  return { cityToCountry, hostnameToCity };
+}
+
+function resolveSelection(data, rawSel) {
+  const { cityToCountry, hostnameToCity } = buildReverseMaps(data);
+  let countries = [...(rawSel.countries ?? [])];
+  let cities    = [...(rawSel.cities    ?? [])];
+  let hostnames = [...(rawSel.hostnames ?? [])];
+  if (!countries.length && cities.length)
+    countries = [...new Set(cities.map(c => cityToCountry[c]).filter(Boolean))].sort();
+  if (!cities.length && hostnames.length) {
+    cities = [...new Set(hostnames.map(h => hostnameToCity[h]).filter(Boolean))].sort();
+    if (!countries.length)
+      countries = [...new Set(cities.map(c => cityToCountry[c]).filter(Boolean))].sort();
+  }
+  return { countries, cities, hostnames };
+}
+
+function onCountryChange(instanceId) {
+  const data      = serverDataCache.get(instanceId);
+  const countryEl = $(`i${instanceId}-sel-country`);
+  const cityEl    = $(`i${instanceId}-sel-city`);
+  const selected  = countryEl ? [...countryEl.selectedOptions].map(o => o.value) : [];
+
+  cityEl.innerHTML = '';
+  if (!data || !selected.length) {
+    cityEl.add(Object.assign(new Option('Select a country first', ''), { disabled: true }));
+  } else {
+    selected.forEach(country => {
+      if (!data.byCountry[country]) return;
+      const grp = document.createElement('optgroup');
+      grp.label = country;
+      data.byCountry[country].cities.forEach(c => grp.appendChild(new Option(c, c)));
+      cityEl.appendChild(grp);
+    });
+  }
+  onCityChange(instanceId);
 }
 
 function onCityChange(instanceId) {
   const data       = serverDataCache.get(instanceId);
+  const cityEl     = $(`i${instanceId}-sel-city`);
   const hostnameEl = $(`i${instanceId}-sel-hostname`);
-  const country    = $(`i${instanceId}-sel-country`)?.value ?? '';
-  const city       = $(`i${instanceId}-sel-city`)?.value ?? '';
+  const selected   = cityEl ? [...cityEl.selectedOptions].map(o => o.value) : [];
 
-  hostnameEl.innerHTML = '<option value="">Any</option>';
-
-  if (data && country && city && data.byCountry[country]?.byCity[city]) {
-    data.byCountry[country].byCity[city].forEach(h => hostnameEl.appendChild(new Option(h, h)));
+  hostnameEl.innerHTML = '';
+  if (!data || !selected.length) {
+    hostnameEl.add(Object.assign(new Option('Select a city first', ''), { disabled: true }));
+  } else {
+    selected.forEach(city => {
+      const hostnames = getHostnamesForCity(data, city);
+      if (!hostnames.length) return;
+      const grp = document.createElement('optgroup');
+      grp.label = city;
+      hostnames.forEach(h => grp.appendChild(new Option(h, h)));
+      hostnameEl.appendChild(grp);
+    });
   }
 }
 
-function populateServerSelector(instanceId, data) {
-  const providerEl  = $(`i${instanceId}-sel-provider`);
-  const countryEl   = $(`i${instanceId}-sel-country`);
-  const applyBtn    = $(`i${instanceId}-sel-apply`);
+function populateServerSelector(instanceId, data, currentSel = {}) {
+  const { countries, cities, hostnames } = resolveSelection(data, currentSel);
 
+  const providerEl = $(`i${instanceId}-sel-provider`);
   if (providerEl) providerEl.textContent = data.provider ?? '–';
 
-  countryEl.innerHTML = '<option value="">Any</option>';
+  const countryEl = $(`i${instanceId}-sel-country`);
+  countryEl.innerHTML = '';
   data.countries.forEach(c => countryEl.appendChild(new Option(c, c)));
-
-  [$(`i${instanceId}-sel-city`), $(`i${instanceId}-sel-hostname`)].forEach(el => {
-    if (el) { el.innerHTML = '<option value="">Any</option>'; el.disabled = false; }
-  });
   countryEl.disabled = false;
+  [...countryEl.options].forEach(o => { o.selected = countries.includes(o.value); });
+
+  onCountryChange(instanceId);
+
+  const cityEl = $(`i${instanceId}-sel-city`);
+  cityEl.disabled = false;
+  [...cityEl.options].forEach(o => { o.selected = cities.includes(o.value); });
+
+  onCityChange(instanceId);
+
+  const hostnameEl = $(`i${instanceId}-sel-hostname`);
+  hostnameEl.disabled = false;
+  [...hostnameEl.options].forEach(o => { o.selected = hostnames.includes(o.value); });
+
+  const applyBtn = $(`i${instanceId}-sel-apply`);
   if (applyBtn) applyBtn.disabled = false;
 
   const boolContainer = $(`i${instanceId}-bool-filters`);
@@ -398,19 +452,25 @@ function populateServerSelector(instanceId, data) {
       boolContainer.appendChild(row);
     });
   }
+
+  serverSelectorReady.add(instanceId);
 }
 
-async function loadServerData(instanceId) {
-  if (serverDataCache.has(instanceId)) return;
+async function loadServerData(instanceId, currentSel) {
+  if (serverSelectorReady.has(instanceId)) return;
+  if (serverDataCache.has(instanceId)) {
+    populateServerSelector(instanceId, serverDataCache.get(instanceId), currentSel);
+    return;
+  }
   try {
     const res  = await fetch(`/api/${instanceId}/servers`);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error ?? 'Failed to load server list');
     serverDataCache.set(instanceId, data);
-    populateServerSelector(instanceId, data);
+    populateServerSelector(instanceId, data, currentSel);
   } catch (err) {
     const el = $(`i${instanceId}-sel-country`);
-    if (el) el.innerHTML = '<option value="">Unavailable</option>';
+    if (el) { el.innerHTML = ''; el.appendChild(new Option('Unavailable', '')); }
     console.warn(`[server-selector][${instanceId}]`, err.message);
   }
 }
@@ -423,9 +483,9 @@ async function applyServerSelection(instanceId) {
   const inst       = instances.find(i => i.id === instanceId);
   const name       = inst?.name ?? instanceId;
 
-  const countries = countryEl?.value  ? [countryEl.value]  : [];
-  const cities    = cityEl?.value     ? [cityEl.value]     : [];
-  const hostnames = hostnameEl?.value ? [hostnameEl.value] : [];
+  const countries = [...(countryEl?.selectedOptions  ?? [])].map(o => o.value);
+  const cities    = [...(cityEl?.selectedOptions     ?? [])].map(o => o.value);
+  const hostnames = [...(hostnameEl?.selectedOptions ?? [])].map(o => o.value);
   const data = serverDataCache.get(instanceId);
   const booleans = {};
   (data?.booleanFilters ?? []).forEach(({ key }) => {

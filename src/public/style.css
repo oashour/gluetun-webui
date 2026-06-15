@@ -290,20 +290,24 @@ main {
 .spin { display: inline-block; animation: spin 1s linear infinite; }
 
 /* ---- Server Selector card ---- */
-.selector-row { align-items: center; }
-
-.server-select {
-  flex: 1;
-  max-width: 62%;
-  min-width: 0;
+.sel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
 }
+
+.server-select { width: 100%; min-width: 0; }
 .server-select:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .server-selector-footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   padding-top: 0.4rem;
 }
+.sel-hint { color: var(--muted); font-size: 0.76rem; }
 
 .btn-apply { border-color: var(--blue); color: var(--blue); }
 .btn-apply:hover:not(:disabled) { background: rgba(96,165,250,0.15); }
