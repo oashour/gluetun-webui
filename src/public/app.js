@@ -159,42 +159,7 @@ function buildDashboardGroup(inst) {
             <span class="stat-label">Provider</span>
             <span class="stat-value" id="i${id}-sel-provider">–</span>
           </div>
-          <div class="sel-acc-item" id="i${id}-acc-country">
-            <div class="sel-acc-header">
-              <span class="sel-acc-label">Country</span>
-              <span class="sel-count" id="i${id}-country-count"></span>
-              <span class="sel-summary sel-summary-any" id="i${id}-sel-country-summary">Any</span>
-              <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
-              <span class="sel-acc-arrow">&#9660;</span>
-            </div>
-            <div class="sel-acc-body">
-              <select multiple size="7" id="i${id}-sel-country" class="server-select" disabled></select>
-            </div>
-          </div>
-          <div class="sel-acc-item" id="i${id}-acc-city">
-            <div class="sel-acc-header">
-              <span class="sel-acc-label">City</span>
-              <span class="sel-count" id="i${id}-city-count"></span>
-              <span class="sel-summary sel-summary-any" id="i${id}-sel-city-summary">Any</span>
-              <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
-              <span class="sel-acc-arrow">&#9660;</span>
-            </div>
-            <div class="sel-acc-body">
-              <select multiple size="7" id="i${id}-sel-city" class="server-select" disabled></select>
-            </div>
-          </div>
-          <div class="sel-acc-item" id="i${id}-acc-hostname">
-            <div class="sel-acc-header">
-              <span class="sel-acc-label">Server</span>
-              <span class="sel-count" id="i${id}-hostname-count"></span>
-              <span class="sel-summary sel-summary-any" id="i${id}-sel-hostname-summary">Any</span>
-              <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
-              <span class="sel-acc-arrow">&#9660;</span>
-            </div>
-            <div class="sel-acc-body">
-              <select multiple size="7" id="i${id}-sel-hostname" class="server-select" disabled></select>
-            </div>
-          </div>
+          <div id="i${id}-geo-panels"></div>
           <div class="server-selector-footer">
             <small class="sel-hint">Nothing selected = Any</small>
             <div class="sel-footer-actions">
@@ -225,9 +190,6 @@ function buildDashboardGroup(inst) {
   `;
   group.querySelector(`#i${id}-btn-start`).addEventListener('click', () => vpnAction(id, 'start'));
   group.querySelector(`#i${id}-btn-stop`).addEventListener('click', () => vpnAction(id, 'stop'));
-  group.querySelector(`#i${id}-sel-country`).addEventListener('change', () => onCountryChange(id));
-  group.querySelector(`#i${id}-sel-city`).addEventListener('change', () => onCityChange(id));
-  group.querySelector(`#i${id}-sel-hostname`).addEventListener('change', () => updateSelSummary(id, 'hostname'));
   group.querySelector(`#i${id}-sel-apply`).addEventListener('click', () => applyServerSelection(id));
   group.querySelector(`#i${id}-sel-reset`).addEventListener('click', () => resetServerSelector(id));
   group.querySelector(`#i${id}-sel-isp`).addEventListener('change', () => onBooleanChange(id));
@@ -239,16 +201,6 @@ function buildDashboardGroup(inst) {
     e.stopPropagation();
     clearFilters(id);
   });
-  for (const level of ['country', 'city', 'hostname']) {
-    const item = group.querySelector(`#i${id}-acc-${level}`);
-    item.querySelector('.sel-acc-header').addEventListener('click', e => {
-      if (!e.target.closest('.sel-clear-btn')) toggleAccordion(id, level);
-    });
-    item.querySelector('.sel-clear-btn').addEventListener('click', e => {
-      e.stopPropagation();
-      clearLevel(id, level);
-    });
-  }
   return group;
 }
 
@@ -413,20 +365,6 @@ function updateSelSummary(instanceId, level) {
   summary.classList.toggle('sel-summary-any', !selected.length);
 }
 
-function getHostnamesForCity(data, city) {
-  for (const { byCity } of Object.values(data.byCountry)) {
-    if (byCity[city]) return byCity[city];
-  }
-  return [];
-}
-
-function getCityCountry(data, city) {
-  for (const [country, { byCity }] of Object.entries(data.byCountry)) {
-    if (byCity[city]) return country;
-  }
-  return '';
-}
-
 function updateCount(instanceId, level) {
   const selectEl = $(`i${instanceId}-sel-${level}`);
   const countEl  = $(`i${instanceId}-${level}-count`);
@@ -441,39 +379,197 @@ function getCheckedBooleans(instanceId, data) {
     .map(({ key }) => key);
 }
 
-function buildReverseMaps(data) {
-  const cityToCountry = {}, hostnameToCity = {};
-  for (const [country, { byCity }] of Object.entries(data.byCountry)) {
-    for (const [city, hostnames] of Object.entries(byCity)) {
-      cityToCountry[city] = country;
-      for (const h of hostnames) hostnameToCity[h] = city;
+// ---- Generic geo tree helpers ----
+
+function navigatePath(tree, path) {
+  let node = tree;
+  for (const key of path) {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
+    node = node[key];
+  }
+  return node;
+}
+
+function collectLeafHostnames(node) {
+  if (!node) return [];
+  if (Array.isArray(node)) return node;
+  const out = [];
+  for (const child of Object.values(node)) out.push(...collectLeafHostnames(child));
+  return out;
+}
+
+function subtreeHasViable(data, geoTree, path, filters) {
+  if (!filters.checkedBools.length && !filters.selectedIsps.length) return true;
+  return collectLeafHostnames(navigatePath(geoTree, path)).some(h => hostnameMatchesFilters(data, h, filters));
+}
+
+function getEffectivePaths(instanceId, data, upToLevel) {
+  const { geoTree } = data;
+  const filters = getFilters(instanceId, data);
+  let paths = [[]];
+  for (let i = 0; i <= upToLevel; i++) {
+    const el = $(`i${instanceId}-sel-${i}`);
+    const selected = el ? new Set([...el.selectedOptions].map(o => o.value)) : new Set();
+    const next = [];
+    for (const path of paths) {
+      const node = navigatePath(geoTree, path);
+      if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
+      for (const key of Object.keys(node)) {
+        if (selected.size && !selected.has(key)) continue;
+        const childPath = [...path, key];
+        if (subtreeHasViable(data, geoTree, childPath, filters)) next.push(childPath);
+      }
+    }
+    paths = next;
+  }
+  return paths;
+}
+
+function buildGeoPanel(instanceId, levelIdx) {
+  const data = serverDataCache.get(instanceId);
+  if (!data) return;
+  const { geoTree } = data;
+  const filters = getFilters(instanceId, data);
+  const el = $(`i${instanceId}-sel-${levelIdx}`);
+  if (!el) return;
+
+  const prevSelected = new Set([...el.selectedOptions].map(o => o.value));
+  el.innerHTML = '';
+
+  const parentPaths = getEffectivePaths(instanceId, data, levelIdx - 1);
+  parentPaths.forEach(parentPath => {
+    const parentNode = navigatePath(geoTree, parentPath);
+    if (!parentNode || typeof parentNode !== 'object' || Array.isArray(parentNode)) return;
+
+    const viableKeys = Object.keys(parentNode)
+      .filter(k => subtreeHasViable(data, geoTree, [...parentPath, k], filters));
+    if (!viableKeys.length) return;
+
+    if (parentPath.length > 0) {
+      const grp = document.createElement('optgroup');
+      grp.label = parentPath[parentPath.length - 1];
+      viableKeys.forEach(k => {
+        const opt = new Option(k, k);
+        opt.selected = prevSelected.has(k);
+        grp.appendChild(opt);
+      });
+      el.appendChild(grp);
+    } else {
+      viableKeys.forEach(k => {
+        const opt = new Option(k, k);
+        opt.selected = prevSelected.has(k);
+        el.appendChild(opt);
+      });
+    }
+  });
+
+  updateSelSummary(instanceId, String(levelIdx));
+  updateCount(instanceId, String(levelIdx));
+}
+
+function buildHostnamePanel(instanceId) {
+  const data = serverDataCache.get(instanceId);
+  if (!data) return;
+  const { geoTree, geoLevels } = data;
+  const filters = getFilters(instanceId, data);
+  const hostnameEl = $(`i${instanceId}-sel-hostname`);
+  if (!hostnameEl) return;
+
+  const prevSelected = new Set([...hostnameEl.selectedOptions].map(o => o.value));
+  hostnameEl.innerHTML = '';
+
+  const leafPaths = getEffectivePaths(instanceId, data, geoLevels.length - 1);
+  leafPaths.forEach(leafPath => {
+    const hostnames = navigatePath(geoTree, leafPath);
+    if (!Array.isArray(hostnames)) return;
+    const filtered = (filters.checkedBools.length || filters.selectedIsps.length)
+      ? hostnames.filter(h => hostnameMatchesFilters(data, h, filters))
+      : hostnames;
+    if (!filtered.length) return;
+    const grp = document.createElement('optgroup');
+    const lastVal   = leafPath[leafPath.length - 1];
+    const parentVal = leafPath.length >= 2 ? leafPath[leafPath.length - 2] : null;
+    grp.label = parentVal ? `${lastVal}, ${parentVal}` : lastVal;
+    filtered.forEach(h => {
+      const opt = new Option(data.hostnameLabels?.[h] ?? h, h);
+      opt.selected = prevSelected.has(h);
+      grp.appendChild(opt);
+    });
+    hostnameEl.appendChild(grp);
+  });
+
+  updateSelSummary(instanceId, 'hostname');
+  updateCount(instanceId, 'hostname');
+}
+
+function onGeoChange(instanceId, levelIdx) {
+  const data = serverDataCache.get(instanceId);
+  if (!data) return;
+  for (let i = levelIdx + 1; i < data.geoLevels.length; i++) buildGeoPanel(instanceId, i);
+  buildHostnamePanel(instanceId);
+}
+
+function buildHostnamePathMap(geoTree) {
+  const map = {};
+  function traverse(node, path) {
+    if (Array.isArray(node)) { node.forEach(h => { map[h] = path; }); }
+    else if (node && typeof node === 'object') {
+      for (const [k, child] of Object.entries(node)) traverse(child, [...path, k]);
     }
   }
-  return { cityToCountry, hostnameToCity };
+  traverse(geoTree, []);
+  return map;
 }
 
 function resolveSelection(data, rawSel) {
-  const { cityToCountry, hostnameToCity } = buildReverseMaps(data);
+  const { geoLevels, geoTree } = data;
+  const hostnames = (rawSel.hostnames ?? []).filter(Boolean);
 
-  // Build case-insensitive lookup maps: lowercase key → correctly-cased value from servers.json
-  const countryMap = Object.fromEntries(data.countries.map(c => [c.toLowerCase(), c]));
-  const cityMap    = Object.fromEntries(Object.keys(cityToCountry).map(c => [c.toLowerCase(), c]));
+  const levelSels = geoLevels.map(({ field }) =>
+    (rawSel[field + 's'] ?? []).filter(Boolean)
+  );
 
-  const norm = (arr, map) =>
-    (arr ?? []).map(v => map[v.trim().toLowerCase()]).filter(Boolean);
-
-  let countries = norm(rawSel.countries, countryMap);
-  let cities    = norm(rawSel.cities,    cityMap);
-  let hostnames = (rawSel.hostnames ?? []).filter(Boolean);
-
-  if (!countries.length && cities.length)
-    countries = [...new Set(cities.map(c => cityToCountry[c]).filter(Boolean))].sort();
-  if (!cities.length && hostnames.length) {
-    cities = [...new Set(hostnames.map(h => hostnameToCity[h]).filter(Boolean))].sort();
-    if (!countries.length)
-      countries = [...new Set(cities.map(c => cityToCountry[c]).filter(Boolean))].sort();
+  // If only hostnames given: reverse-lookup paths from tree
+  if (hostnames.length && levelSels.every(s => !s.length)) {
+    const pathMap = buildHostnamePathMap(geoTree);
+    geoLevels.forEach((_, i) => {
+      levelSels[i] = [...new Set(hostnames.map(h => pathMap[h]?.[i]).filter(Boolean))].sort();
+    });
+  } else {
+    // Forward-fill missing ancestors from known descendants
+    for (let i = geoLevels.length - 1; i > 0; i--) {
+      if (levelSels[i].length && !levelSels[i - 1].length) {
+        const parents = new Set();
+        (function findParents(node, path, depth) {
+          if (Array.isArray(node) || !node) return;
+          if (depth === i) {
+            for (const k of Object.keys(node)) {
+              if (levelSels[i].includes(k)) parents.add(path[i - 1]);
+            }
+          } else {
+            for (const [k, child] of Object.entries(node)) findParents(child, [...path, k], depth + 1);
+          }
+        })(geoTree, [], 0);
+        levelSels[i - 1] = [...parents].sort();
+      }
+    }
   }
-  return { countries, cities, hostnames };
+
+  // Case-normalize each level's selections against actual tree values
+  const allValsAtLevel = (depth) => {
+    const vals = new Set();
+    (function traverse(node, d) {
+      if (d === depth) { if (!Array.isArray(node) && node) Object.keys(node).forEach(k => vals.add(k)); }
+      else if (!Array.isArray(node) && node) Object.values(node).forEach(c => traverse(c, d + 1));
+    })(geoTree, 0);
+    return vals;
+  };
+  const normalized = levelSels.map((sels, i) => {
+    const lookup = Object.fromEntries([...allValsAtLevel(i)].map(v => [v.toLowerCase(), v]));
+    return sels.map(v => lookup[v.trim().toLowerCase()]).filter(Boolean);
+  });
+
+  return { levelSels: normalized, hostnames };
 }
 
 function openAccordion(instanceId, level) {
@@ -485,22 +581,21 @@ function toggleAccordion(instanceId, level) {
 }
 
 function clearLevel(instanceId, level) {
-  if (level === 'country') {
-    const el = $(`i${instanceId}-sel-country`);
-    if (el) [...el.options].forEach(o => o.selected = false);
-    onCountryChange(instanceId);
-  } else if (level === 'city') {
-    const el = $(`i${instanceId}-sel-city`);
-    if (el) [...el.options].forEach(o => o.selected = false);
-    onCityChange(instanceId);
-  } else if (level === 'isp') {
+  if (level === 'isp') {
     const el = $(`i${instanceId}-sel-isp`);
     if (el) [...el.options].forEach(o => o.selected = false);
     onBooleanChange(instanceId);
-  } else {
+  } else if (level === 'hostname') {
     const el = $(`i${instanceId}-sel-hostname`);
     if (el) [...el.options].forEach(o => o.selected = false);
     updateSelSummary(instanceId, 'hostname');
+    updateCount(instanceId, 'hostname');
+  } else {
+    // Numeric geo level index
+    const idx = Number(level);
+    const el = $(`i${instanceId}-sel-${idx}`);
+    if (el) [...el.options].forEach(o => o.selected = false);
+    onGeoChange(instanceId, idx);
   }
 }
 
@@ -563,133 +658,101 @@ function clearFilters(instanceId) {
   onBooleanChange(instanceId);
 }
 
-function cityHasViableServers(data, city, filters) {
-  const { checkedBools, selectedIsps } = filters;
-  if (!checkedBools.length && !selectedIsps.length) return true;
-  return getHostnamesForCity(data, city).some(h => hostnameMatchesFilters(data, h, filters));
-}
-
-function countryHasViableServers(data, country, filters) {
-  return (data.byCountry[country]?.cities ?? []).some(city =>
-    cityHasViableServers(data, city, filters)
-  );
-}
-
 function onBooleanChange(instanceId) {
-  const data      = serverDataCache.get(instanceId);
-  const countryEl = $(`i${instanceId}-sel-country`);
-  if (!data || !countryEl) return;
-
-  const filters    = getFilters(instanceId, data);
-  const prevSelected = new Set([...countryEl.selectedOptions].map(o => o.value));
-
-  countryEl.innerHTML = '';
-  data.countries
-    .filter(c => countryHasViableServers(data, c, filters))
-    .forEach(c => {
-      const opt = new Option(c, c);
-      opt.selected = prevSelected.has(c);
-      countryEl.appendChild(opt);
-    });
-
+  const data = serverDataCache.get(instanceId);
+  if (!data) return;
   updateIspChip(instanceId);
-  updateCount(instanceId, 'country');
-  onCountryChange(instanceId);
-}
-
-function onCountryChange(instanceId) {
-  const data      = serverDataCache.get(instanceId);
-  const countryEl = $(`i${instanceId}-sel-country`);
-  const cityEl    = $(`i${instanceId}-sel-city`);
-  const selected  = countryEl ? [...countryEl.selectedOptions].map(o => o.value) : [];
-  const filters   = getFilters(instanceId, data);
-
-  cityEl.innerHTML = '';
-  if (data) {
-    // "any" → show all viable countries; specific selection → show only selected
-    const scope = selected.length ? selected : data.countries.filter(c => countryHasViableServers(data, c, filters));
-    scope.forEach(country => {
-      if (!data.byCountry[country]) return;
-      const viableCities = data.byCountry[country].cities
-        .filter(city => cityHasViableServers(data, city, filters));
-      if (!viableCities.length) return;
-      const grp = document.createElement('optgroup');
-      grp.label = country;
-      viableCities.forEach(c => grp.appendChild(new Option(c, c)));
-      cityEl.appendChild(grp);
-    });
-  }
-
-  updateSelSummary(instanceId, 'country');
-  updateCount(instanceId, 'city');
-  onCityChange(instanceId);
-}
-
-function onCityChange(instanceId) {
-  const data       = serverDataCache.get(instanceId);
-  const cityEl     = $(`i${instanceId}-sel-city`);
-  const hostnameEl = $(`i${instanceId}-sel-hostname`);
-  const selected   = cityEl ? [...cityEl.selectedOptions].map(o => o.value) : [];
-  const filters    = getFilters(instanceId, data);
-
-  hostnameEl.innerHTML = '';
-  if (data) {
-    const addCityGroup = city => {
-      let hostnames = getHostnamesForCity(data, city);
-      if (filters.checkedBools.length || filters.selectedIsps.length)
-        hostnames = hostnames.filter(h => hostnameMatchesFilters(data, h, filters));
-      if (!hostnames.length) return;
-      const country = getCityCountry(data, city);
-      const grp = document.createElement('optgroup');
-      grp.label = country ? `${city}, ${country}` : city;
-      hostnames.forEach(h => grp.appendChild(new Option(data.hostnameLabels?.[h] ?? h, h)));
-      hostnameEl.appendChild(grp);
-    };
-
-    if (selected.length) {
-      selected.forEach(addCityGroup);
-    } else {
-      // "any": scope to selected countries (or all if none selected)
-      const countryEl      = $(`i${instanceId}-sel-country`);
-      const selCountries   = countryEl ? [...countryEl.selectedOptions].map(o => o.value) : [];
-      const countryScope   = selCountries.length ? selCountries : data.countries.filter(c => countryHasViableServers(data, c, filters));
-      countryScope.forEach(country => {
-        (data.byCountry[country]?.cities ?? [])
-          .filter(city => cityHasViableServers(data, city, filters))
-          .forEach(addCityGroup);
-      });
-    }
-  }
-
-  updateSelSummary(instanceId, 'city');
-  updateSelSummary(instanceId, 'hostname');
-  updateCount(instanceId, 'hostname');
+  buildGeoPanel(instanceId, 0);
+  onGeoChange(instanceId, 0);
 }
 
 function populateServerSelector(instanceId, data, currentSel = {}) {
-  const { countries, cities, hostnames } = resolveSelection(data, currentSel);
+  const geoPanels = $(`i${instanceId}-geo-panels`);
+  if (!geoPanels) return;
+
+  // Build dynamic geo accordion panels
+  geoPanels.innerHTML = '';
+  data.geoLevels.forEach(({ label }, idx) => {
+    const item = document.createElement('div');
+    item.className = 'sel-acc-item';
+    item.id = `i${instanceId}-acc-${idx}`;
+    item.innerHTML = `
+      <div class="sel-acc-header">
+        <span class="sel-acc-label">${escHtml(label)}</span>
+        <span class="sel-count" id="i${instanceId}-${idx}-count"></span>
+        <span class="sel-summary sel-summary-any" id="i${instanceId}-sel-${idx}-summary">Any</span>
+        <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
+        <span class="sel-acc-arrow">&#9660;</span>
+      </div>
+      <div class="sel-acc-body">
+        <select multiple size="7" id="i${instanceId}-sel-${idx}" class="server-select"></select>
+      </div>`;
+    item.querySelector('.sel-acc-header').addEventListener('click', e => {
+      if (!e.target.closest('.sel-clear-btn')) toggleAccordion(instanceId, String(idx));
+    });
+    item.querySelector('.sel-clear-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      clearLevel(instanceId, String(idx));
+    });
+    item.querySelector('select').addEventListener('change', () => onGeoChange(instanceId, idx));
+    geoPanels.appendChild(item);
+  });
+
+  // Add hostname accordion
+  const hostnameItem = document.createElement('div');
+  hostnameItem.className = 'sel-acc-item';
+  hostnameItem.id = `i${instanceId}-acc-hostname`;
+  hostnameItem.innerHTML = `
+    <div class="sel-acc-header">
+      <span class="sel-acc-label">Server</span>
+      <span class="sel-count" id="i${instanceId}-hostname-count"></span>
+      <span class="sel-summary sel-summary-any" id="i${instanceId}-sel-hostname-summary">Any</span>
+      <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
+      <span class="sel-acc-arrow">&#9660;</span>
+    </div>
+    <div class="sel-acc-body">
+      <select multiple size="7" id="i${instanceId}-sel-hostname" class="server-select"></select>
+    </div>`;
+  hostnameItem.querySelector('.sel-acc-header').addEventListener('click', e => {
+    if (!e.target.closest('.sel-clear-btn')) toggleAccordion(instanceId, 'hostname');
+  });
+  hostnameItem.querySelector('.sel-clear-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    clearLevel(instanceId, 'hostname');
+  });
+  geoPanels.appendChild(hostnameItem);
 
   const providerEl = $(`i${instanceId}-sel-provider`);
   if (providerEl) providerEl.textContent = data.provider ?? '–';
 
-  const countryEl = $(`i${instanceId}-sel-country`);
-  countryEl.innerHTML = '';
-  data.countries.forEach(c => countryEl.appendChild(new Option(c, c)));
-  countryEl.disabled = false;
-  [...countryEl.options].forEach(o => { o.selected = countries.includes(o.value); });
+  // Resolve pre-selection from current gluetun settings
+  const { levelSels, hostnames } = resolveSelection(data, currentSel);
 
-  updateCount(instanceId, 'country');
-  onCountryChange(instanceId);
+  // Build geo level 0, then pre-select
+  buildGeoPanel(instanceId, 0);
+  const el0 = $(`i${instanceId}-sel-0`);
+  if (el0 && levelSels[0]?.length) {
+    [...el0.options].forEach(o => { o.selected = levelSels[0].includes(o.value); });
+    updateSelSummary(instanceId, '0');
+  }
 
-  const cityEl = $(`i${instanceId}-sel-city`);
-  cityEl.disabled = false;
-  [...cityEl.options].forEach(o => { o.selected = cities.includes(o.value); });
+  // Build levels 1..N-1 with parent context applied, pre-select each
+  for (let i = 1; i < data.geoLevels.length; i++) {
+    buildGeoPanel(instanceId, i);
+    const elI = $(`i${instanceId}-sel-${i}`);
+    if (elI && levelSels[i]?.length) {
+      [...elI.options].forEach(o => { o.selected = levelSels[i].includes(o.value); });
+      updateSelSummary(instanceId, String(i));
+    }
+  }
 
-  onCityChange(instanceId);
-
+  // Build hostname panel, pre-select
+  buildHostnamePanel(instanceId);
   const hostnameEl = $(`i${instanceId}-sel-hostname`);
-  hostnameEl.disabled = false;
-  [...hostnameEl.options].forEach(o => { o.selected = hostnames.includes(o.value); });
+  if (hostnameEl && hostnames.length) {
+    [...hostnameEl.options].forEach(o => { o.selected = hostnames.includes(o.value); });
+    updateSelSummary(instanceId, 'hostname');
+  }
 
   const applyBtn = $(`i${instanceId}-sel-apply`);
   if (applyBtn) applyBtn.disabled = false;
@@ -699,7 +762,7 @@ function populateServerSelector(instanceId, data, currentSel = {}) {
   // ISP multi-select (inside filter bar)
   const ispSection = $(`i${instanceId}-isp-section`);
   const ispEl      = $(`i${instanceId}-sel-isp`);
-  if (ispSection) ispSection.style.display = 'none'; // always reset to closed
+  if (ispSection) ispSection.style.display = 'none';
   if (ispSection && ispEl && data.isps?.length) {
     ispEl.innerHTML = '';
     data.isps.forEach(isp => ispEl.appendChild(new Option(isp, isp)));
@@ -742,7 +805,8 @@ function populateServerSelector(instanceId, data, currentSel = {}) {
   if (filterBar) filterBar.style.display = hasFilters ? '' : 'none';
 
   // All accordions start collapsed
-  for (const l of ['country', 'city', 'hostname']) $(`i${instanceId}-acc-${l}`)?.classList.remove('open');
+  for (let i = 0; i < data.geoLevels.length; i++) $(`i${instanceId}-acc-${i}`)?.classList.remove('open');
+  $(`i${instanceId}-acc-hostname`)?.classList.remove('open');
 
   serverSelectorReady.add(instanceId);
 }
@@ -760,24 +824,25 @@ async function loadServerData(instanceId, currentSel) {
     serverDataCache.set(instanceId, data);
     populateServerSelector(instanceId, data, currentSel);
   } catch (err) {
-    const el = $(`i${instanceId}-sel-country`);
-    if (el) { el.innerHTML = ''; el.appendChild(new Option('Unavailable', '')); }
+    const geoPanels = $(`i${instanceId}-geo-panels`);
+    if (geoPanels) geoPanels.innerHTML = '<div style="color:var(--muted);font-size:0.82rem;padding:0.4rem 0">Could not load server list</div>';
     console.warn(`[server-selector][${instanceId}]`, err.message);
   }
 }
 
 async function applyServerSelection(instanceId) {
-  const countryEl  = $(`i${instanceId}-sel-country`);
-  const cityEl     = $(`i${instanceId}-sel-city`);
   const hostnameEl = $(`i${instanceId}-sel-hostname`);
   const applyBtn   = $(`i${instanceId}-sel-apply`);
   const inst       = instances.find(i => i.id === instanceId);
   const name       = inst?.name ?? instanceId;
+  const data       = serverDataCache.get(instanceId);
 
-  const countries = [...(countryEl?.selectedOptions  ?? [])].map(o => o.value);
-  const cities    = [...(cityEl?.selectedOptions     ?? [])].map(o => o.value);
   const hostnames = [...(hostnameEl?.selectedOptions ?? [])].map(o => o.value);
-  const data = serverDataCache.get(instanceId);
+  const geoSels = {};
+  (data?.geoLevels ?? []).forEach(({ field }, idx) => {
+    const el = $(`i${instanceId}-sel-${idx}`);
+    geoSels[field + 's'] = el ? [...el.selectedOptions].map(o => o.value) : [];
+  });
   const booleans = {};
   (data?.booleanFilters ?? []).forEach(({ key }) => {
     const chip = $(`i${instanceId}-bool-${key}`);
@@ -789,17 +854,17 @@ async function applyServerSelection(instanceId) {
   showToast(`${name}: Applying server selection…`, 'info', 8000);
 
   try {
-    const res  = await fetch(`/api/${instanceId}/vpn/settings`, {
+    const res = await fetch(`/api/${instanceId}/vpn/settings`, {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ countries, cities, hostnames, booleans }),
+      body:    JSON.stringify({ ...geoSels, hostnames, booleans }),
     });
-    const data = await res.json();
-    if (data.ok) {
+    const result = await res.json();
+    if (result.ok) {
       showToast(`${name}: Server selection applied`, 'success');
       setTimeout(async () => { await pollAll(); scheduleNextPoll(); }, 3000);
     } else {
-      showToast(`${name}: ${data.error ?? 'Unknown error'}`, 'error', 5000);
+      showToast(`${name}: ${result.error ?? 'Unknown error'}`, 'error', 5000);
     }
   } catch (err) {
     showToast(`${name}: Request failed: ${err.message}`, 'error', 5000);

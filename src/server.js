@@ -9,6 +9,73 @@ app.disable('x-powered-by');
 const PORT = process.env.PORT || 3000;
 const SERVERS_JSON_PATH = process.env.SERVERS_JSON_PATH || '/gluetun/servers.json';
 
+// Per-provider geo hierarchy config. hierarchy = ordered fields top→bottom above server.
+// partial_region = true means some servers lack the region field → bucket into OTHER_REGION.
+const PROVIDER_GEO_CONFIG = {
+  'airvpn':                  { hierarchy: ['region', 'country', 'city'] },
+  'nordvpn':                 { hierarchy: ['region', 'country', 'city'] },
+  'slickvpn':                { hierarchy: ['region', 'country', 'city'] },
+  'surfshark':               { hierarchy: ['region', 'country', 'city'] },
+  'hidemyass':               { hierarchy: ['country', 'region', 'city'], partial_region: true },
+  'ivpn':                    { hierarchy: ['country', 'region', 'city'], partial_region: true },
+  'vpnsecure':               { hierarchy: ['country', 'region', 'city'], partial_region: true },
+  'privado':                 { hierarchy: ['country', 'region', 'city'] },
+  'purevpn':                 { hierarchy: ['country', 'region', 'city'] },
+  'windscribe':              { hierarchy: ['region', 'city'] },
+  'giganews':                { hierarchy: ['region'] },
+  'vyprvpn':                 { hierarchy: ['region'] },
+  'private internet access': { hierarchy: ['region'] },
+  'cyberghost':              { hierarchy: ['country'] },
+  'expressvpn':              { hierarchy: ['country', 'city'] },
+  'fastestvpn':              { hierarchy: ['country', 'city'] },
+  'ipvanish':                { hierarchy: ['country', 'city'] },
+  'mullvad':                 { hierarchy: ['country', 'city'] },
+  'privatevpn':              { hierarchy: ['country', 'city'] },
+  'protonvpn':               { hierarchy: ['country', 'city'] },
+  'torguard':                { hierarchy: ['country', 'city'] },
+  'vpn unlimited':           { hierarchy: ['country', 'city'] },
+  'perfect privacy':         { hierarchy: ['city'] },
+};
+const DEFAULT_GEO_HIERARCHY = ['country', 'city'];
+const OTHER_REGION          = 'Other Region';
+const GEO_FIELD_LABELS      = { region: 'Region', country: 'Country', city: 'City' };
+
+function buildGeoTree(servers, hierarchy, partialRegion) {
+  const tree = {};
+  for (const s of servers) {
+    if (!s.hostname) continue;
+    const path = [];
+    let skip = false;
+    for (const field of hierarchy) {
+      const val = s[field];
+      if (!val) {
+        if (partialRegion && field === 'region') { path.push(OTHER_REGION); }
+        else { skip = true; break; }
+      } else { path.push(val); }
+    }
+    if (skip) continue;
+    let node = tree;
+    for (let i = 0; i < path.length - 1; i++) {
+      if (!node[path[i]]) node[path[i]] = {};
+      node = node[path[i]];
+    }
+    const leaf = path[path.length - 1];
+    if (!node[leaf]) node[leaf] = [];
+    node[leaf].push(s.hostname);
+  }
+  return sortGeoTree(tree, hierarchy.length);
+}
+
+function sortGeoTree(obj, depth) {
+  if (depth <= 1 || Array.isArray(obj)) return obj;
+  const keys = Object.keys(obj).sort((a, b) =>
+    a === OTHER_REGION ? 1 : b === OTHER_REGION ? -1 : a.localeCompare(b)
+  );
+  const out = {};
+  for (const k of keys) out[k] = sortGeoTree(obj[k], depth - 1);
+  return out;
+}
+
 const BOOLEAN_FILTER_MAP = [
   { field: 'owned',        key: 'owned_only',        label: 'Owned' },
   { field: 'free',         key: 'free_only',         label: 'Free' },
@@ -335,29 +402,11 @@ app.get('/api/:instanceId/servers', async (req, res) => {
     ? allServers.filter(s => s.vpn === vpnType)
     : allServers;
 
-  const countryMap = new Map();
-  for (const s of servers) {
-    const country = s.country ?? '';
-    const city = s.city ?? '';
-    const hostname = s.hostname ?? '';
-    if (!country || !hostname) continue;
-    if (!countryMap.has(country)) countryMap.set(country, new Map());
-    const cityMap = countryMap.get(country);
-    if (!cityMap.has(city)) cityMap.set(city, []);
-    cityMap.get(city).push(hostname);
-  }
-
-  const byCountry = {};
-  const countries = [...countryMap.keys()].sort();
-  for (const country of countries) {
-    const cityMap = countryMap.get(country);
-    const cities = [...cityMap.keys()].sort();
-    const byCity = {};
-    for (const city of cities) {
-      byCity[city] = cityMap.get(city).sort();
-    }
-    byCountry[country] = { cities, byCity };
-  }
+  const geoConfig    = PROVIDER_GEO_CONFIG[providerName] ?? { hierarchy: DEFAULT_GEO_HIERARCHY };
+  const hierarchy    = geoConfig.hierarchy;
+  const partialRegion = geoConfig.partial_region ?? false;
+  const geoLevels    = hierarchy.map(field => ({ label: GEO_FIELD_LABELS[field] ?? field, field }));
+  const geoTree      = buildGeoTree(servers, hierarchy, partialRegion);
 
   const booleanFilters = BOOLEAN_FILTER_MAP
     .filter(({ field }) => servers.some(s => s[field]))
@@ -389,7 +438,7 @@ app.get('/api/:instanceId/servers', async (req, res) => {
   }
   const isps = [...ispSet].sort();
 
-  res.json({ ok: true, provider: providerName, countries, byCountry, booleanFilters, hostnameFlags, hostnameLabels, hostnameIsps, isps });
+  res.json({ ok: true, provider: providerName, geoLevels, geoTree, booleanFilters, hostnameFlags, hostnameLabels, hostnameIsps, isps });
 });
 
 // --- Per-instance VPN settings (server selection) ---
@@ -398,11 +447,18 @@ app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
   const instance = resolveInstance(req.params.instanceId);
   if (!instance) return res.status(400).json({ ok: false, error: 'Unknown instance ID' });
 
-  const { countries = [], cities = [], hostnames = [], booleans = {} } = req.body ?? {};
+  const body = req.body ?? {};
   const isStrArr = v => Array.isArray(v) && v.every(x => typeof x === 'string');
-  if (!isStrArr(countries) || !isStrArr(cities) || !isStrArr(hostnames)) {
-    return res.status(400).json({ ok: false, error: 'countries, cities, and hostnames must each be arrays of strings' });
+  const GEO_PLURAL_FIELDS = ['regions', 'countries', 'cities'];
+  const geoSels = {};
+  for (const field of GEO_PLURAL_FIELDS) {
+    const val = body[field] ?? [];
+    if (!isStrArr(val)) return res.status(400).json({ ok: false, error: `${field} must be an array of strings` });
+    geoSels[field] = val;
   }
+  const hostnames = body.hostnames ?? [];
+  if (!isStrArr(hostnames)) return res.status(400).json({ ok: false, error: 'hostnames must be an array of strings' });
+  const booleans = body.booleans ?? {};
   const allowedBoolKeys = new Set(BOOLEAN_FILTER_MAP.map(f => f.key));
   if (
     typeof booleans !== 'object' || Array.isArray(booleans) || booleans === null ||
@@ -411,7 +467,7 @@ app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid booleans object' });
   }
 
-  const upstream = { provider: { server_selection: { countries, cities, hostnames, ...booleans } } };
+  const upstream = { provider: { server_selection: { ...geoSels, hostnames, ...booleans } } };
   try {
     const text = await gluetunFetchText(instance, '/v1/vpn/settings', 'PUT', upstream);
     res.json({ ok: true, message: text });
