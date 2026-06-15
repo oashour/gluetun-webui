@@ -6,8 +6,9 @@ const VALID_STATES = new Set(['connected', 'paused', 'disconnected', 'unknown'])
 let instances    = [];   // [{ id, name }] from /api/instances
 let isPolling    = false;
 let refreshTimer = null;
-const serverDataCache    = new Map(); // instanceId -> server data from /api/:id/servers
+const serverDataCache     = new Map(); // instanceId -> server data from /api/:id/servers
 const serverSelectorReady = new Set(); // guard: pre-populate only once per instance
+const serverLastSelCache  = new Map(); // instanceId -> latest server_selection from gluetun
 
 // ---- Utility ----
 
@@ -141,35 +142,62 @@ function buildDashboardGroup(inst) {
           <h3>Server Selector</h3>
         </div>
         <div class="card-body">
+          <div class="filter-bar" id="i${id}-filter-bar" style="display:none">
+            <div class="filter-bar-row">
+              <span class="filter-bar-label">&#8801; Filters</span>
+              <div class="filter-chips-row" id="i${id}-bool-chips"></div>
+              <button class="sel-clear-btn" id="i${id}-filters-clear" title="Clear all filters" tabindex="-1">&#10005;</button>
+            </div>
+            <div class="filter-isp-panel" id="i${id}-isp-section" style="display:none">
+              <div class="filter-isp-inner">
+                <select multiple size="3" id="i${id}-sel-isp" class="server-select" disabled></select>
+              </div>
+              <button class="sel-clear-btn" id="i${id}-isp-clear" title="Clear ISP" tabindex="-1">&#10005;</button>
+            </div>
+          </div>
           <div class="stat-row">
             <span class="stat-label">Provider</span>
             <span class="stat-value" id="i${id}-sel-provider">–</span>
           </div>
-          <div class="sel-group">
-            <div class="sel-group-header">
-              <span class="stat-label">Country</span>
-              <span class="sel-summary" id="i${id}-sel-country-summary"></span>
+          <div class="sel-acc-item" id="i${id}-acc-country">
+            <div class="sel-acc-header">
+              <span class="sel-acc-label">Country</span>
+              <span class="sel-summary sel-summary-any" id="i${id}-sel-country-summary">Any</span>
+              <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
+              <span class="sel-acc-arrow">&#9660;</span>
             </div>
-            <select multiple size="6" id="i${id}-sel-country" class="server-select" disabled></select>
-          </div>
-          <div class="sel-group">
-            <div class="sel-group-header">
-              <span class="stat-label">City</span>
-              <span class="sel-summary" id="i${id}-sel-city-summary"></span>
+            <div class="sel-acc-body">
+              <select multiple size="7" id="i${id}-sel-country" class="server-select" disabled></select>
             </div>
-            <select multiple size="6" id="i${id}-sel-city" class="server-select" disabled></select>
           </div>
-          <div class="sel-group">
-            <div class="sel-group-header">
-              <span class="stat-label">Hostname</span>
-              <span class="sel-summary" id="i${id}-sel-hostname-summary"></span>
+          <div class="sel-acc-item" id="i${id}-acc-city">
+            <div class="sel-acc-header">
+              <span class="sel-acc-label">City</span>
+              <span class="sel-summary sel-summary-any" id="i${id}-sel-city-summary">Any</span>
+              <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
+              <span class="sel-acc-arrow">&#9660;</span>
             </div>
-            <select multiple size="6" id="i${id}-sel-hostname" class="server-select" disabled></select>
+            <div class="sel-acc-body">
+              <select multiple size="7" id="i${id}-sel-city" class="server-select" disabled></select>
+            </div>
           </div>
-          <div class="bool-filters" id="i${id}-bool-filters"></div>
+          <div class="sel-acc-item" id="i${id}-acc-hostname">
+            <div class="sel-acc-header">
+              <span class="sel-acc-label">Server</span>
+              <span class="sel-summary sel-summary-any" id="i${id}-sel-hostname-summary">Any</span>
+              <button class="sel-clear-btn" title="Clear" tabindex="-1">&#10005;</button>
+              <span class="sel-acc-arrow">&#9660;</span>
+            </div>
+            <div class="sel-acc-body">
+              <select multiple size="7" id="i${id}-sel-hostname" class="server-select" disabled></select>
+            </div>
+          </div>
           <div class="server-selector-footer">
-            <small class="sel-hint">Ctrl/Cmd+click to select multiple. Nothing selected = Any.</small>
-            <button id="i${id}-sel-apply" class="btn-apply" disabled>Apply</button>
+            <small class="sel-hint">Nothing selected = Any</small>
+            <div class="sel-footer-actions">
+              <button id="i${id}-sel-reset" class="btn-reset" disabled>Reset</button>
+              <button id="i${id}-sel-apply" class="btn-apply" disabled>Apply</button>
+            </div>
           </div>
         </div>
       </div>
@@ -198,6 +226,26 @@ function buildDashboardGroup(inst) {
   group.querySelector(`#i${id}-sel-city`).addEventListener('change', () => onCityChange(id));
   group.querySelector(`#i${id}-sel-hostname`).addEventListener('change', () => updateSelSummary(id, 'hostname'));
   group.querySelector(`#i${id}-sel-apply`).addEventListener('click', () => applyServerSelection(id));
+  group.querySelector(`#i${id}-sel-reset`).addEventListener('click', () => resetServerSelector(id));
+  group.querySelector(`#i${id}-sel-isp`).addEventListener('change', () => onBooleanChange(id));
+  group.querySelector(`#i${id}-isp-clear`).addEventListener('click', e => {
+    e.stopPropagation();
+    clearLevel(id, 'isp');
+  });
+  group.querySelector(`#i${id}-filters-clear`).addEventListener('click', e => {
+    e.stopPropagation();
+    clearFilters(id);
+  });
+  for (const level of ['country', 'city', 'hostname']) {
+    const item = group.querySelector(`#i${id}-acc-${level}`);
+    item.querySelector('.sel-acc-header').addEventListener('click', e => {
+      if (!e.target.closest('.sel-clear-btn')) toggleAccordion(id, level);
+    });
+    item.querySelector('.sel-clear-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      clearLevel(id, level);
+    });
+  }
   return group;
 }
 
@@ -254,7 +302,10 @@ function updatePanel(inst, health) {
 
   setEl(`i${id}-vpn-status`,   d?.status ?? '–');
   setEl(`i${id}-vpn-provider`, s?.provider?.name ?? '–');
-  if (s?.provider?.name) loadServerData(id, s.provider.server_selection ?? {});
+  if (s?.provider?.name) {
+    serverLastSelCache.set(id, s.provider.server_selection ?? {});
+    loadServerData(id, s.provider.server_selection ?? {});
+  }
   setEl(`i${id}-vpn-protocol`, s?.type ?? '–');
   setEl(`i${id}-vpn-server`,
     ip?.hostname
@@ -368,7 +419,7 @@ function getHostnamesForCity(data, city) {
 
 function getCheckedBooleans(instanceId, data) {
   return (data?.booleanFilters ?? [])
-    .filter(({ key }) => $(`i${instanceId}-bool-${key}`)?.checked)
+    .filter(({ key }) => $(`i${instanceId}-bool-${key}`)?.dataset.active === 'true')
     .map(({ key }) => key);
 }
 
@@ -407,16 +458,102 @@ function resolveSelection(data, rawSel) {
   return { countries, cities, hostnames };
 }
 
-function cityHasViableServers(data, city, checkedBools) {
-  if (!checkedBools.length) return true;
-  return getHostnamesForCity(data, city).some(h =>
-    checkedBools.every(key => data.hostnameFlags?.[h]?.includes(key))
-  );
+function openAccordion(instanceId, level) {
+  $(`i${instanceId}-acc-${level}`)?.classList.add('open');
 }
 
-function countryHasViableServers(data, country, checkedBools) {
+function toggleAccordion(instanceId, level) {
+  $(`i${instanceId}-acc-${level}`)?.classList.toggle('open');
+}
+
+function clearLevel(instanceId, level) {
+  if (level === 'country') {
+    const el = $(`i${instanceId}-sel-country`);
+    if (el) [...el.options].forEach(o => o.selected = false);
+    onCountryChange(instanceId);
+  } else if (level === 'city') {
+    const el = $(`i${instanceId}-sel-city`);
+    if (el) [...el.options].forEach(o => o.selected = false);
+    onCityChange(instanceId);
+  } else if (level === 'isp') {
+    const el = $(`i${instanceId}-sel-isp`);
+    if (el) [...el.options].forEach(o => o.selected = false);
+    onBooleanChange(instanceId);
+  } else {
+    const el = $(`i${instanceId}-sel-hostname`);
+    if (el) [...el.options].forEach(o => o.selected = false);
+    updateSelSummary(instanceId, 'hostname');
+  }
+}
+
+function resetServerSelector(instanceId) {
+  const data    = serverDataCache.get(instanceId);
+  const lastSel = serverLastSelCache.get(instanceId) ?? {};
+  if (!data) return;
+  (data.booleanFilters ?? []).forEach(({ key }) => {
+    const chip = $(`i${instanceId}-bool-${key}`);
+    if (chip) { chip.dataset.active = 'false'; chip.classList.remove('filter-chip-on'); }
+  });
+  const ispEl = $(`i${instanceId}-sel-isp`);
+  if (ispEl) [...ispEl.options].forEach(o => o.selected = false);
+  populateServerSelector(instanceId, data, lastSel);
+}
+
+function getSelectedIsps(instanceId) {
+  const el = $(`i${instanceId}-sel-isp`);
+  return el ? [...el.selectedOptions].map(o => o.value) : [];
+}
+
+function getFilters(instanceId, data) {
+  return {
+    checkedBools: getCheckedBooleans(instanceId, data),
+    selectedIsps: getSelectedIsps(instanceId),
+  };
+}
+
+function hostnameMatchesFilters(data, hostname, filters) {
+  if (filters.checkedBools.some(key => !data.hostnameFlags?.[hostname]?.includes(key))) return false;
+  if (filters.selectedIsps.length) {
+    const isp = data.hostnameIsps?.[hostname];
+    if (!isp || !filters.selectedIsps.includes(isp)) return false;
+  }
+  return true;
+}
+
+function updateIspChip(instanceId) {
+  const chip = $(`i${instanceId}-bool-isp`);
+  if (!chip) return;
+  const selected = getSelectedIsps(instanceId);
+  const on = selected.length > 0;
+  chip.dataset.active = String(on);
+  chip.classList.toggle('filter-chip-on', on);
+  chip.textContent = on ? `ISP (${selected.length})` : 'ISP';
+}
+
+function clearFilters(instanceId) {
+  const data = serverDataCache.get(instanceId);
+  (data?.booleanFilters ?? []).forEach(({ key }) => {
+    const chip = $(`i${instanceId}-bool-${key}`);
+    if (chip) { chip.dataset.active = 'false'; chip.classList.remove('filter-chip-on'); }
+  });
+  const ispEl = $(`i${instanceId}-sel-isp`);
+  if (ispEl) [...ispEl.options].forEach(o => o.selected = false);
+  const ispSection = $(`i${instanceId}-isp-section`);
+  if (ispSection) ispSection.style.display = 'none';
+  const ispChip = $(`i${instanceId}-bool-isp`);
+  if (ispChip) { ispChip.dataset.active = 'false'; ispChip.classList.remove('filter-chip-on'); ispChip.textContent = 'ISP'; }
+  onBooleanChange(instanceId);
+}
+
+function cityHasViableServers(data, city, filters) {
+  const { checkedBools, selectedIsps } = filters;
+  if (!checkedBools.length && !selectedIsps.length) return true;
+  return getHostnamesForCity(data, city).some(h => hostnameMatchesFilters(data, h, filters));
+}
+
+function countryHasViableServers(data, country, filters) {
   return (data.byCountry[country]?.cities ?? []).some(city =>
-    cityHasViableServers(data, city, checkedBools)
+    cityHasViableServers(data, city, filters)
   );
 }
 
@@ -425,18 +562,19 @@ function onBooleanChange(instanceId) {
   const countryEl = $(`i${instanceId}-sel-country`);
   if (!data || !countryEl) return;
 
-  const checkedBools = getCheckedBooleans(instanceId, data);
+  const filters    = getFilters(instanceId, data);
   const prevSelected = new Set([...countryEl.selectedOptions].map(o => o.value));
 
   countryEl.innerHTML = '';
   data.countries
-    .filter(c => countryHasViableServers(data, c, checkedBools))
+    .filter(c => countryHasViableServers(data, c, filters))
     .forEach(c => {
       const opt = new Option(c, c);
       opt.selected = prevSelected.has(c);
       countryEl.appendChild(opt);
     });
 
+  updateIspChip(instanceId);
   onCountryChange(instanceId);
 }
 
@@ -445,7 +583,7 @@ function onCountryChange(instanceId) {
   const countryEl = $(`i${instanceId}-sel-country`);
   const cityEl    = $(`i${instanceId}-sel-city`);
   const selected  = countryEl ? [...countryEl.selectedOptions].map(o => o.value) : [];
-  const checkedBools = getCheckedBooleans(instanceId, data);
+  const filters   = getFilters(instanceId, data);
 
   cityEl.innerHTML = '';
   if (!data || !selected.length) {
@@ -454,7 +592,7 @@ function onCountryChange(instanceId) {
     selected.forEach(country => {
       if (!data.byCountry[country]) return;
       const viableCities = data.byCountry[country].cities
-        .filter(city => cityHasViableServers(data, city, checkedBools));
+        .filter(city => cityHasViableServers(data, city, filters));
       if (!viableCities.length) return;
       const grp = document.createElement('optgroup');
       grp.label = country;
@@ -473,8 +611,7 @@ function onCityChange(instanceId) {
   const cityEl     = $(`i${instanceId}-sel-city`);
   const hostnameEl = $(`i${instanceId}-sel-hostname`);
   const selected   = cityEl ? [...cityEl.selectedOptions].map(o => o.value) : [];
-
-  const checkedBools = getCheckedBooleans(instanceId, data);
+  const filters    = getFilters(instanceId, data);
 
   hostnameEl.innerHTML = '';
   if (!data || !selected.length) {
@@ -482,15 +619,13 @@ function onCityChange(instanceId) {
   } else {
     selected.forEach(city => {
       let hostnames = getHostnamesForCity(data, city);
-      if (checkedBools.length) {
-        hostnames = hostnames.filter(h =>
-          checkedBools.every(key => data.hostnameFlags?.[h]?.includes(key))
-        );
+      if (filters.checkedBools.length || filters.selectedIsps.length) {
+        hostnames = hostnames.filter(h => hostnameMatchesFilters(data, h, filters));
       }
       if (!hostnames.length) return;
       const grp = document.createElement('optgroup');
       grp.label = city;
-      hostnames.forEach(h => grp.appendChild(new Option(h, h)));
+      hostnames.forEach(h => grp.appendChild(new Option(data.hostnameLabels?.[h] ?? h, h)));
       hostnameEl.appendChild(grp);
     });
   }
@@ -524,18 +659,56 @@ function populateServerSelector(instanceId, data, currentSel = {}) {
 
   const applyBtn = $(`i${instanceId}-sel-apply`);
   if (applyBtn) applyBtn.disabled = false;
+  const resetBtn = $(`i${instanceId}-sel-reset`);
+  if (resetBtn) resetBtn.disabled = false;
 
-  const boolContainer = $(`i${instanceId}-bool-filters`);
-  if (boolContainer) {
-    boolContainer.innerHTML = '';
-    (data.booleanFilters ?? []).forEach(({ key, label }) => {
-      const row = document.createElement('label');
-      row.className = 'bool-filter-row';
-      row.innerHTML = `<input type="checkbox" id="i${instanceId}-bool-${escHtml(key)}"> ${escHtml(label)}`;
-      row.querySelector('input').addEventListener('change', () => onBooleanChange(instanceId));
-      boolContainer.appendChild(row);
-    });
+  // ISP multi-select (inside filter bar)
+  const ispSection = $(`i${instanceId}-isp-section`);
+  const ispEl      = $(`i${instanceId}-sel-isp`);
+  if (ispSection) ispSection.style.display = 'none'; // always reset to closed
+  if (ispSection && ispEl && data.isps?.length) {
+    ispEl.innerHTML = '';
+    data.isps.forEach(isp => ispEl.appendChild(new Option(isp, isp)));
+    ispEl.disabled = false;
   }
+
+  // Boolean filter chips
+  const chipsRow  = $(`i${instanceId}-bool-chips`);
+  const filterBar = $(`i${instanceId}-filter-bar`);
+  const hasFilters = (data.booleanFilters?.length || data.isps?.length);
+  if (chipsRow) {
+    chipsRow.innerHTML = '';
+    (data.booleanFilters ?? []).forEach(({ key, label }) => {
+      const chip = document.createElement('button');
+      chip.id = `i${instanceId}-bool-${key}`;
+      chip.className = 'filter-chip';
+      chip.dataset.active = 'false';
+      chip.textContent = label;
+      chip.addEventListener('click', () => {
+        const on = chip.dataset.active !== 'true';
+        chip.dataset.active = String(on);
+        chip.classList.toggle('filter-chip-on', on);
+        onBooleanChange(instanceId);
+      });
+      chipsRow.appendChild(chip);
+    });
+    if (data.isps?.length) {
+      const ispChip = document.createElement('button');
+      ispChip.id = `i${instanceId}-bool-isp`;
+      ispChip.className = 'filter-chip';
+      ispChip.dataset.active = 'false';
+      ispChip.textContent = 'ISP';
+      ispChip.addEventListener('click', () => {
+        const panel = $(`i${instanceId}-isp-section`);
+        if (panel) panel.style.display = panel.style.display === 'none' ? '' : 'none';
+      });
+      chipsRow.appendChild(ispChip);
+    }
+  }
+  if (filterBar) filterBar.style.display = hasFilters ? '' : 'none';
+
+  // All accordions start collapsed
+  for (const l of ['country', 'city', 'hostname']) $(`i${instanceId}-acc-${l}`)?.classList.remove('open');
 
   serverSelectorReady.add(instanceId);
 }
@@ -573,8 +746,8 @@ async function applyServerSelection(instanceId) {
   const data = serverDataCache.get(instanceId);
   const booleans = {};
   (data?.booleanFilters ?? []).forEach(({ key }) => {
-    const el = $(`i${instanceId}-bool-${key}`);
-    if (el) booleans[key] = el.checked;
+    const chip = $(`i${instanceId}-bool-${key}`);
+    if (chip) booleans[key] = chip.dataset.active === 'true';
   });
 
   applyBtn.disabled    = true;

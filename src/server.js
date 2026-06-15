@@ -10,14 +10,14 @@ const PORT = process.env.PORT || 3000;
 const SERVERS_JSON_PATH = process.env.SERVERS_JSON_PATH || '/gluetun/servers.json';
 
 const BOOLEAN_FILTER_MAP = [
-  { field: 'owned',        key: 'owned_only',        label: 'Owned only' },
-  { field: 'free',         key: 'free_only',         label: 'Free only' },
-  { field: 'premium',      key: 'premium_only',      label: 'Premium only' },
-  { field: 'stream',       key: 'stream_only',       label: 'Stream only' },
-  { field: 'multihop',     key: 'multi_hop_only',    label: 'Multi-hop only' },
-  { field: 'port_forward', key: 'port_forward_only', label: 'Port forward only' },
-  { field: 'secure_core',  key: 'secure_core_only',  label: 'Secure core only' },
-  { field: 'tor',          key: 'tor_only',          label: 'Tor only' },
+  { field: 'owned',        key: 'owned_only',        label: 'Owned' },
+  { field: 'free',         key: 'free_only',         label: 'Free' },
+  { field: 'premium',      key: 'premium_only',      label: 'Premium' },
+  { field: 'stream',       key: 'stream_only',       label: 'Stream' },
+  { field: 'multihop',     key: 'multi_hop_only',    label: 'Multi-hop' },
+  { field: 'port_forward', key: 'port_forward_only', label: 'Port forward' },
+  { field: 'secure_core',  key: 'secure_core_only',  label: 'Secure core' },
+  { field: 'tor',          key: 'tor_only',          label: 'Tor' },
 ];
 
 // --- Docker Secrets Support ---
@@ -371,7 +371,25 @@ app.get('/api/:instanceId/servers', async (req, res) => {
     if (flags.length) hostnameFlags[s.hostname] = flags;
   }
 
-  res.json({ ok: true, provider: providerName, countries, byCountry, booleanFilters, hostnameFlags });
+  // Map hostname -> display label (only when a server_name / name / number prefix is available)
+  const hostnameLabels = {};
+  for (const s of servers) {
+    if (!s.hostname) continue;
+    const prefix = s.server_name ?? s.name ?? (s.number != null ? String(s.number) : null);
+    if (prefix) hostnameLabels[s.hostname] = `${prefix} (${s.hostname})`;
+  }
+
+  // ISP support: map hostname -> isp + sorted unique list
+  const hostnameIsps = {};
+  const ispSet = new Set();
+  for (const s of servers) {
+    if (!s.hostname || !s.isp) continue;
+    hostnameIsps[s.hostname] = s.isp;
+    ispSet.add(s.isp);
+  }
+  const isps = [...ispSet].sort();
+
+  res.json({ ok: true, provider: providerName, countries, byCountry, booleanFilters, hostnameFlags, hostnameLabels, hostnameIsps, isps });
 });
 
 // --- Per-instance VPN settings (server selection) ---
