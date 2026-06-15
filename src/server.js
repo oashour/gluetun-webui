@@ -99,6 +99,59 @@ function getConfigValue(envVar, secretName = null) {
   return process.env[envVar] || '';
 }
 
+// instanceId → [{ index, providerName, vpnType, label, ...credentials }]
+// Populated by parseInstances(); credentials never sent to the client.
+const providerConfigs = new Map();
+
+function titleCase(str) {
+  return str.replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Parse GLUETUN_<prefix>_PROVIDER_P vars (P = 1..10) for a given prefix.
+// prefix = "GLUETUN_1" (numbered instance) or "GLUETUN" (legacy single-instance).
+function parseProviders(prefix) {
+  const list = [];
+  for (let p = 1; p <= 10; p++) {
+    const name = getConfigValue(`${prefix}_PROVIDER_${p}`, `${prefix.toLowerCase()}_provider_${p}`);
+    if (!name) continue;
+
+    const vpnType = (process.env[`${prefix}_PROVIDER_${p}_VPN_TYPE`] || 'wireguard').toLowerCase();
+    const label   = process.env[`${prefix}_PROVIDER_${p}_LABEL`] || titleCase(name);
+    const base    = { index: p, providerName: name.toLowerCase(), vpnType, label };
+
+    if (vpnType === 'wireguard') {
+      const wgKey = getConfigValue(`${prefix}_PROVIDER_${p}_WG_KEY`, `${prefix.toLowerCase()}_provider_${p}_wg_key`);
+      if (!wgKey) { console.warn(`[config] ${prefix}_PROVIDER_${p} missing WG_KEY — skipping`); continue; }
+      list.push({
+        ...base,
+        wgKey,
+        wgAddresses: process.env[`${prefix}_PROVIDER_${p}_WG_ADDRESSES`] ?? null,
+        wgPsk: getConfigValue(`${prefix}_PROVIDER_${p}_WG_PSK`, `${prefix.toLowerCase()}_provider_${p}_wg_psk`) || null,
+      });
+    } else if (vpnType === 'openvpn') {
+      const g = (key, secret) => getConfigValue(`${prefix}_PROVIDER_${p}_${key}`, `${prefix.toLowerCase()}_provider_${p}_${secret}`);
+      const ovpnUser = g('OVPN_USER', 'ovpn_user');
+      const ovpnCert = g('OVPN_CERT', 'ovpn_cert');
+      if (!ovpnUser && !ovpnCert) {
+        console.warn(`[config] ${prefix}_PROVIDER_${p} (openvpn) has no credentials — skipping`);
+        continue;
+      }
+      list.push({
+        ...base,
+        ovpnUser,
+        ovpnPassword:      g('OVPN_PASSWORD',      'ovpn_password'),
+        ovpnCert,
+        ovpnKey:           g('OVPN_KEY',            'ovpn_key'),
+        ovpnEncryptedKey:  g('OVPN_ENCRYPTED_KEY',  'ovpn_encrypted_key'),
+        ovpnKeyPassphrase: g('OVPN_KEY_PASSPHRASE', 'ovpn_key_passphrase'),
+      });
+    } else {
+      console.warn(`[config] ${prefix}_PROVIDER_${p}_VPN_TYPE=${vpnType} unknown — skipping`);
+    }
+  }
+  return list;
+}
+
 // --- Multi-instance configuration ---
 // Define multiple gluetun instances via numbered env vars:
 //   GLUETUN_1_URL, GLUETUN_1_NAME, GLUETUN_1_API_KEY, GLUETUN_1_USER, GLUETUN_1_PASSWORD
@@ -117,14 +170,16 @@ function parseInstances() {
       console.error(`[startup] Invalid GLUETUN_${i}_URL: ${url}`);
       process.exit(1);
     }
+    const id = String(i);
     list.push({
-      id: String(i),
+      id,
       name: getConfigValue(`GLUETUN_${i}_NAME`, `gluetun_${i}_name`) || `Instance ${i}`,
       url: url.replace(/\/$/, ''),
       apiKey:   getConfigValue(`GLUETUN_${i}_API_KEY`, `gluetun_${i}_api_key`),
       user:     getConfigValue(`GLUETUN_${i}_USER`, `gluetun_${i}_user`),
       password: getConfigValue(`GLUETUN_${i}_PASSWORD`, `gluetun_${i}_password`),
     });
+    providerConfigs.set(id, parseProviders(`GLUETUN_${i}`));
   }
   if (list.length === 0) {
     // Legacy single-instance fallback
@@ -144,6 +199,7 @@ function parseInstances() {
       user:     getConfigValue('GLUETUN_USER', 'gluetun_user'),
       password: getConfigValue('GLUETUN_PASSWORD', 'gluetun_password'),
     });
+    providerConfigs.set('1', parseProviders('GLUETUN'));
   }
   return list;
 }
@@ -273,7 +329,13 @@ async function fetchInstanceHealth(instance) {
 
 // --- Instance list endpoint ---
 app.get('/api/instances', (req, res) => {
-  res.json(instances.map(({ id, name }) => ({ id, name })));
+  res.json(instances.map(({ id, name }) => ({
+    id,
+    name,
+    providers: (providerConfigs.get(id) ?? []).map(({ index, providerName, label, vpnType }) =>
+      ({ index, providerName, label, vpnType })
+    ),
+  })));
 });
 
 // --- Per-instance health endpoint ---
@@ -372,16 +434,25 @@ app.get('/api/:instanceId/servers', async (req, res) => {
   const instance = resolveInstance(req.params.instanceId);
   if (!instance) return res.status(400).json({ ok: false, error: 'Unknown instance ID' });
 
-  let settings;
-  try {
-    settings = await gluetunFetch(instance, '/v1/vpn/settings');
-  } catch (err) {
-    console.error(`[upstream][${instance.id}]`, err.message);
-    return res.status(502).json({ ok: false, error: 'Upstream error' });
-  }
+  let providerName, vpnType;
+  const providerIndex = req.query.providerIndex ? Number(req.query.providerIndex) : null;
 
-  const providerName = settings?.provider?.name;
-  const vpnType = settings?.type;
+  if (providerIndex !== null) {
+    const cfg = (providerConfigs.get(instance.id) ?? []).find(p => p.index === providerIndex);
+    if (!cfg) return res.status(400).json({ ok: false, error: 'Provider not found' });
+    providerName = cfg.providerName;
+    vpnType = cfg.vpnType;
+  } else {
+    let settings;
+    try {
+      settings = await gluetunFetch(instance, '/v1/vpn/settings');
+    } catch (err) {
+      console.error(`[upstream][${instance.id}]`, err.message);
+      return res.status(502).json({ ok: false, error: 'Upstream error' });
+    }
+    providerName = settings?.provider?.name;
+    vpnType = settings?.type;
+  }
 
   let raw;
   try {
@@ -467,7 +538,43 @@ app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid booleans object' });
   }
 
-  const upstream = { provider: { server_selection: { ...geoSels, hostnames, ...booleans } } };
+  let upstream;
+  const providerIndex = body.providerIndex != null ? Number(body.providerIndex) : null;
+  if (providerIndex !== null) {
+    const cfg = (providerConfigs.get(instance.id) ?? []).find(p => p.index === providerIndex);
+    if (!cfg) return res.status(400).json({ ok: false, error: 'Provider not found' });
+
+    let credentialBlock;
+    if (cfg.vpnType === 'wireguard') {
+      credentialBlock = {
+        wireguard: {
+          private_key:    cfg.wgKey,
+          addresses:      cfg.wgAddresses ? cfg.wgAddresses.split(',').map(s => s.trim()) : [],
+          pre_shared_key: cfg.wgPsk ?? '',
+        },
+      };
+    } else {
+      credentialBlock = {
+        openvpn: {
+          user:           cfg.ovpnUser          ?? '',
+          password:       cfg.ovpnPassword      ?? '',
+          cert:           cfg.ovpnCert          ?? '',
+          key:            cfg.ovpnKey           ?? '',
+          encrypted_key:  cfg.ovpnEncryptedKey  ?? '',
+          key_passphrase: cfg.ovpnKeyPassphrase ?? '',
+        },
+      };
+    }
+
+    upstream = {
+      type: cfg.vpnType,
+      provider: { name: cfg.providerName, server_selection: { vpn: cfg.vpnType, ...geoSels, hostnames, ...booleans } },
+      ...credentialBlock,
+    };
+  } else {
+    upstream = { provider: { server_selection: { ...geoSels, hostnames, ...booleans } } };
+  }
+
   try {
     const text = await gluetunFetchText(instance, '/v1/vpn/settings', 'PUT', upstream);
     res.json({ ok: true, message: text });

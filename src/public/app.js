@@ -157,7 +157,9 @@ function buildDashboardGroup(inst) {
           </div>
           <div class="stat-row">
             <span class="stat-label">Provider</span>
-            <span class="stat-value" id="i${id}-sel-provider">–</span>
+            ${inst.providers?.length
+              ? `<select id="i${id}-sel-provider" class="provider-select"></select>`
+              : `<span class="stat-value" id="i${id}-sel-provider">–</span>`}
           </div>
           <div id="i${id}-geo-panels"></div>
           <div class="server-selector-footer">
@@ -192,6 +194,11 @@ function buildDashboardGroup(inst) {
   group.querySelector(`#i${id}-btn-stop`).addEventListener('click', () => vpnAction(id, 'stop'));
   group.querySelector(`#i${id}-sel-apply`).addEventListener('click', () => applyServerSelection(id));
   group.querySelector(`#i${id}-sel-reset`).addEventListener('click', () => resetServerSelector(id));
+  if (inst.providers?.length) {
+    const provSel = group.querySelector(`#i${id}-sel-provider`);
+    inst.providers.forEach(p => provSel.appendChild(new Option(p.label, String(p.index))));
+    provSel.addEventListener('change', () => onProviderChange(id));
+  }
   group.querySelector(`#i${id}-sel-isp`).addEventListener('change', () => onBooleanChange(id));
   group.querySelector(`#i${id}-isp-clear`).addEventListener('click', e => {
     e.stopPropagation();
@@ -258,7 +265,23 @@ function updatePanel(inst, health) {
   setEl(`i${id}-vpn-status`,   d?.status ?? '–');
   setEl(`i${id}-vpn-provider`, s?.provider?.name ?? '–');
   if (s?.provider?.name) {
-    serverLastSelCache.set(id, s.provider.server_selection ?? {});
+    // Sync provider: on first load (before selector is ready) snap dropdown to active provider.
+    // After that, leave the dropdown alone so user changes aren't clobbered by polling.
+    const provSel = $(`i${id}-sel-provider`);
+    if (provSel?.tagName === 'SELECT') {
+      if (!serverSelectorReady.has(id)) {
+        const activeInst = instances.find(i => i.id === id);
+        const match = activeInst?.providers?.find(p => p.providerName === s.provider.name);
+        if (match) provSel.value = String(match.index);
+      }
+    } else if (provSel) {
+      provSel.textContent = s.provider.name;
+    }
+    // Store server_selection + active provider name for Reset
+    serverLastSelCache.set(id, {
+      ...(s.provider.server_selection ?? {}),
+      _activeProviderName: s.provider.name,
+    });
     loadServerData(id, s.provider.server_selection ?? {});
   }
   setEl(`i${id}-vpn-protocol`, s?.type ?? '–');
@@ -505,8 +528,15 @@ function buildHostnamePanel(instanceId) {
 function onGeoChange(instanceId, levelIdx) {
   const data = serverDataCache.get(instanceId);
   if (!data) return;
+  updateSelSummary(instanceId, String(levelIdx));
   for (let i = levelIdx + 1; i < data.geoLevels.length; i++) buildGeoPanel(instanceId, i);
   buildHostnamePanel(instanceId);
+}
+
+function onProviderChange(instanceId) {
+  serverSelectorReady.delete(instanceId);
+  serverDataCache.delete(instanceId);
+  loadServerData(instanceId, {});
 }
 
 function buildHostnamePathMap(geoTree) {
@@ -521,12 +551,16 @@ function buildHostnamePathMap(geoTree) {
   return map;
 }
 
+function pluralField(f) {
+  return f.endsWith('y') ? f.slice(0, -1) + 'ies' : f + 's';
+}
+
 function resolveSelection(data, rawSel) {
   const { geoLevels, geoTree } = data;
   const hostnames = (rawSel.hostnames ?? []).filter(Boolean);
 
   const levelSels = geoLevels.map(({ field }) =>
-    (rawSel[field + 's'] ?? []).filter(Boolean)
+    (rawSel[pluralField(field)] ?? []).filter(Boolean)
   );
 
   // If only hostnames given: reverse-lookup paths from tree
@@ -600,9 +634,31 @@ function clearLevel(instanceId, level) {
 }
 
 function resetServerSelector(instanceId) {
-  const data    = serverDataCache.get(instanceId);
   const lastSel = serverLastSelCache.get(instanceId) ?? {};
-  if (!data) return;
+  let data = serverDataCache.get(instanceId);
+
+  // Restore provider dropdown (if applicable) and reload servers if provider changed
+  const inst = instances.find(i => i.id === instanceId);
+  const provSel = $(`i${instanceId}-sel-provider`);
+  if (provSel?.tagName === 'SELECT' && lastSel._activeProviderName) {
+    const match = inst?.providers?.find(p => p.providerName === lastSel._activeProviderName);
+    if (match) {
+      const prevIdx = Number(provSel.value);
+      provSel.value = String(match.index);
+      if (prevIdx !== match.index) {
+        serverSelectorReady.delete(instanceId);
+        serverDataCache.delete(instanceId);
+        data = null; // force reload
+      }
+    }
+  }
+
+  if (!data) {
+    // Provider changed — reload server data with the reset provider then repopulate
+    loadServerData(instanceId, lastSel);
+    return;
+  }
+
   (data.booleanFilters ?? []).forEach(({ key }) => {
     const chip = $(`i${instanceId}-bool-${key}`);
     if (chip) { chip.dataset.active = 'false'; chip.classList.remove('filter-chip-on'); }
@@ -720,10 +776,11 @@ function populateServerSelector(instanceId, data, currentSel = {}) {
     e.stopPropagation();
     clearLevel(instanceId, 'hostname');
   });
+  hostnameItem.querySelector('select').addEventListener('change', () => updateSelSummary(instanceId, 'hostname'));
   geoPanels.appendChild(hostnameItem);
 
   const providerEl = $(`i${instanceId}-sel-provider`);
-  if (providerEl) providerEl.textContent = data.provider ?? '–';
+  if (providerEl && providerEl.tagName !== 'SELECT') providerEl.textContent = data.provider ?? '–';
 
   // Resolve pre-selection from current gluetun settings
   const { levelSels, hostnames } = resolveSelection(data, currentSel);
@@ -817,8 +874,16 @@ async function loadServerData(instanceId, currentSel) {
     populateServerSelector(instanceId, serverDataCache.get(instanceId), currentSel);
     return;
   }
+  const inst = instances.find(i => i.id === instanceId);
+  const provSel = $(`i${instanceId}-sel-provider`);
+  const providerIndex = (inst?.providers?.length && provSel?.tagName === 'SELECT')
+    ? (Number(provSel.value) || null)
+    : null;
+  const url = providerIndex != null
+    ? `/api/${instanceId}/servers?providerIndex=${providerIndex}`
+    : `/api/${instanceId}/servers`;
   try {
-    const res  = await fetch(`/api/${instanceId}/servers`);
+    const res  = await fetch(url);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error ?? 'Failed to load server list');
     serverDataCache.set(instanceId, data);
@@ -841,23 +906,29 @@ async function applyServerSelection(instanceId) {
   const geoSels = {};
   (data?.geoLevels ?? []).forEach(({ field }, idx) => {
     const el = $(`i${instanceId}-sel-${idx}`);
-    geoSels[field + 's'] = el ? [...el.selectedOptions].map(o => o.value) : [];
+    geoSels[pluralField(field)] = el ? [...el.selectedOptions].map(o => o.value) : [];
   });
   const booleans = {};
   (data?.booleanFilters ?? []).forEach(({ key }) => {
     const chip = $(`i${instanceId}-bool-${key}`);
     if (chip) booleans[key] = chip.dataset.active === 'true';
   });
+  const provSel = $(`i${instanceId}-sel-provider`);
+  const providerIndex = (inst?.providers?.length && provSel?.tagName === 'SELECT')
+    ? (Number(provSel.value) || null)
+    : null;
 
   applyBtn.disabled    = true;
   applyBtn.textContent = 'Applying…';
   showToast(`${name}: Applying server selection…`, 'info', 8000);
 
   try {
+    const body = { ...geoSels, hostnames, booleans };
+    if (providerIndex != null) body.providerIndex = providerIndex;
     const res = await fetch(`/api/${instanceId}/vpn/settings`, {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ ...geoSels, hostnames, booleans }),
+      body:    JSON.stringify(body),
     });
     const result = await res.json();
     if (result.ok) {

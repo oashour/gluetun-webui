@@ -420,6 +420,17 @@ main {
   color: var(--blue);
 }
 
+.provider-select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--blue);
+  font-size: 0.85rem;
+  cursor: pointer;
+  max-width: 12rem;
+  padding: 0.2rem 0.4rem;
+}
+
 .filter-isp-panel {
   display: flex;
   gap: 0.35rem;
