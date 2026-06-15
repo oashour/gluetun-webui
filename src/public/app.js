@@ -247,7 +247,7 @@ function updatePanel(inst, health) {
 
   setEl(`i${id}-vpn-status`,   d?.status ?? '–');
   setEl(`i${id}-vpn-provider`, s?.provider?.name ?? '–');
-  if (s?.provider?.name) loadServerData(id, s.provider.server_selection ?? {});
+  if (s?.provider?.name) loadServerData(id);
   setEl(`i${id}-vpn-protocol`, s?.type ?? '–');
   setEl(`i${id}-vpn-server`,
     ip?.hostname
@@ -356,11 +356,6 @@ function onCountryChange(instanceId) {
     data.byCountry[country].cities.forEach(c => cityEl.appendChild(new Option(c, c)));
   }
 
-  if (cityEl._preselectValue) {
-    cityEl.value = cityEl._preselectValue;
-    delete cityEl._preselectValue;
-    onCityChange(instanceId);
-  }
 }
 
 function onCityChange(instanceId) {
@@ -374,18 +369,11 @@ function onCityChange(instanceId) {
   if (data && country && city && data.byCountry[country]?.byCity[city]) {
     data.byCountry[country].byCity[city].forEach(h => hostnameEl.appendChild(new Option(h, h)));
   }
-
-  if (hostnameEl._preselectValue) {
-    hostnameEl.value = hostnameEl._preselectValue;
-    delete hostnameEl._preselectValue;
-  }
 }
 
-function populateServerSelector(instanceId, data, currentSel) {
+function populateServerSelector(instanceId, data) {
   const providerEl  = $(`i${instanceId}-sel-provider`);
   const countryEl   = $(`i${instanceId}-sel-country`);
-  const cityEl      = $(`i${instanceId}-sel-city`);
-  const hostnameEl  = $(`i${instanceId}-sel-hostname`);
   const applyBtn    = $(`i${instanceId}-sel-apply`);
 
   if (providerEl) providerEl.textContent = data.provider ?? '–';
@@ -393,33 +381,21 @@ function populateServerSelector(instanceId, data, currentSel) {
   countryEl.innerHTML = '<option value="">Any</option>';
   data.countries.forEach(c => countryEl.appendChild(new Option(c, c)));
 
-  const preCountry  = currentSel.countries?.[0] ?? '';
-  const preCity     = currentSel.cities?.[0]    ?? '';
-  const preHostname = currentSel.hostnames?.[0] ?? '';
-
-  if (preCountry && data.byCountry[preCountry]) {
-    countryEl.value = preCountry;
-    cityEl._preselectValue     = preCity;
-    hostnameEl._preselectValue = preHostname;
-  }
-
-  [countryEl, cityEl, hostnameEl].forEach(el => { el.disabled = false; });
+  [$(`i${instanceId}-sel-city`), $(`i${instanceId}-sel-hostname`)].forEach(el => {
+    if (el) { el.innerHTML = '<option value="">Any</option>'; el.disabled = false; }
+  });
+  countryEl.disabled = false;
   if (applyBtn) applyBtn.disabled = false;
-
-  onCountryChange(instanceId);
 }
 
-async function loadServerData(instanceId, currentSel) {
-  if (serverDataCache.has(instanceId)) {
-    populateServerSelector(instanceId, serverDataCache.get(instanceId), currentSel);
-    return;
-  }
+async function loadServerData(instanceId) {
+  if (serverDataCache.has(instanceId)) return;
   try {
     const res  = await fetch(`/api/${instanceId}/servers`);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error ?? 'Failed to load server list');
     serverDataCache.set(instanceId, data);
-    populateServerSelector(instanceId, data, currentSel);
+    populateServerSelector(instanceId, data);
   } catch (err) {
     const el = $(`i${instanceId}-sel-country`);
     if (el) el.innerHTML = '<option value="">Unavailable</option>';
