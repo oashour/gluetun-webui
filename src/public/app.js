@@ -366,6 +366,12 @@ function getHostnamesForCity(data, city) {
   return [];
 }
 
+function getCheckedBooleans(instanceId, data) {
+  return (data?.booleanFilters ?? [])
+    .filter(({ key }) => $(`i${instanceId}-bool-${key}`)?.checked)
+    .map(({ key }) => key);
+}
+
 function buildReverseMaps(data) {
   const cityToCountry = {}, hostnameToCity = {};
   for (const [country, { byCity }] of Object.entries(data.byCountry)) {
@@ -379,9 +385,18 @@ function buildReverseMaps(data) {
 
 function resolveSelection(data, rawSel) {
   const { cityToCountry, hostnameToCity } = buildReverseMaps(data);
-  let countries = [...(rawSel.countries ?? [])];
-  let cities    = [...(rawSel.cities    ?? [])];
-  let hostnames = [...(rawSel.hostnames ?? [])];
+
+  // Build case-insensitive lookup maps: lowercase key → correctly-cased value from servers.json
+  const countryMap = Object.fromEntries(data.countries.map(c => [c.toLowerCase(), c]));
+  const cityMap    = Object.fromEntries(Object.keys(cityToCountry).map(c => [c.toLowerCase(), c]));
+
+  const norm = (arr, map) =>
+    (arr ?? []).map(v => map[v.trim().toLowerCase()]).filter(Boolean);
+
+  let countries = norm(rawSel.countries, countryMap);
+  let cities    = norm(rawSel.cities,    cityMap);
+  let hostnames = (rawSel.hostnames ?? []).filter(Boolean);
+
   if (!countries.length && cities.length)
     countries = [...new Set(cities.map(c => cityToCountry[c]).filter(Boolean))].sort();
   if (!cities.length && hostnames.length) {
@@ -392,11 +407,45 @@ function resolveSelection(data, rawSel) {
   return { countries, cities, hostnames };
 }
 
+function cityHasViableServers(data, city, checkedBools) {
+  if (!checkedBools.length) return true;
+  return getHostnamesForCity(data, city).some(h =>
+    checkedBools.every(key => data.hostnameFlags?.[h]?.includes(key))
+  );
+}
+
+function countryHasViableServers(data, country, checkedBools) {
+  return (data.byCountry[country]?.cities ?? []).some(city =>
+    cityHasViableServers(data, city, checkedBools)
+  );
+}
+
+function onBooleanChange(instanceId) {
+  const data      = serverDataCache.get(instanceId);
+  const countryEl = $(`i${instanceId}-sel-country`);
+  if (!data || !countryEl) return;
+
+  const checkedBools = getCheckedBooleans(instanceId, data);
+  const prevSelected = new Set([...countryEl.selectedOptions].map(o => o.value));
+
+  countryEl.innerHTML = '';
+  data.countries
+    .filter(c => countryHasViableServers(data, c, checkedBools))
+    .forEach(c => {
+      const opt = new Option(c, c);
+      opt.selected = prevSelected.has(c);
+      countryEl.appendChild(opt);
+    });
+
+  onCountryChange(instanceId);
+}
+
 function onCountryChange(instanceId) {
   const data      = serverDataCache.get(instanceId);
   const countryEl = $(`i${instanceId}-sel-country`);
   const cityEl    = $(`i${instanceId}-sel-city`);
   const selected  = countryEl ? [...countryEl.selectedOptions].map(o => o.value) : [];
+  const checkedBools = getCheckedBooleans(instanceId, data);
 
   cityEl.innerHTML = '';
   if (!data || !selected.length) {
@@ -404,11 +453,16 @@ function onCountryChange(instanceId) {
   } else {
     selected.forEach(country => {
       if (!data.byCountry[country]) return;
+      const viableCities = data.byCountry[country].cities
+        .filter(city => cityHasViableServers(data, city, checkedBools));
+      if (!viableCities.length) return;
       const grp = document.createElement('optgroup');
       grp.label = country;
-      data.byCountry[country].cities.forEach(c => grp.appendChild(new Option(c, c)));
+      viableCities.forEach(c => grp.appendChild(new Option(c, c)));
       cityEl.appendChild(grp);
     });
+    if (!cityEl.options.length)
+      cityEl.add(Object.assign(new Option('No cities match current filters', ''), { disabled: true }));
   }
   updateSelSummary(instanceId, 'country');
   onCityChange(instanceId);
@@ -420,12 +474,19 @@ function onCityChange(instanceId) {
   const hostnameEl = $(`i${instanceId}-sel-hostname`);
   const selected   = cityEl ? [...cityEl.selectedOptions].map(o => o.value) : [];
 
+  const checkedBools = getCheckedBooleans(instanceId, data);
+
   hostnameEl.innerHTML = '';
   if (!data || !selected.length) {
     hostnameEl.add(Object.assign(new Option('Select a city first', ''), { disabled: true }));
   } else {
     selected.forEach(city => {
-      const hostnames = getHostnamesForCity(data, city);
+      let hostnames = getHostnamesForCity(data, city);
+      if (checkedBools.length) {
+        hostnames = hostnames.filter(h =>
+          checkedBools.every(key => data.hostnameFlags?.[h]?.includes(key))
+        );
+      }
       if (!hostnames.length) return;
       const grp = document.createElement('optgroup');
       grp.label = city;
@@ -471,6 +532,7 @@ function populateServerSelector(instanceId, data, currentSel = {}) {
       const row = document.createElement('label');
       row.className = 'bool-filter-row';
       row.innerHTML = `<input type="checkbox" id="i${instanceId}-bool-${escHtml(key)}"> ${escHtml(label)}`;
+      row.querySelector('input').addEventListener('change', () => onBooleanChange(instanceId));
       boolContainer.appendChild(row);
     });
   }

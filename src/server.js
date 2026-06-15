@@ -360,10 +360,18 @@ app.get('/api/:instanceId/servers', async (req, res) => {
   }
 
   const booleanFilters = BOOLEAN_FILTER_MAP
-    .filter(({ field }) => servers.some(s => s[field] === true))
+    .filter(({ field }) => servers.some(s => s[field]))
     .map(({ key, label }) => ({ key, label }));
 
-  res.json({ ok: true, provider: providerName, countries, byCountry, booleanFilters });
+  // Map hostname -> array of boolean keys that are truthy for that server
+  const hostnameFlags = {};
+  for (const s of servers) {
+    if (!s.hostname) continue;
+    const flags = BOOLEAN_FILTER_MAP.filter(({ field }) => s[field]).map(({ key }) => key);
+    if (flags.length) hostnameFlags[s.hostname] = flags;
+  }
+
+  res.json({ ok: true, provider: providerName, countries, byCountry, booleanFilters, hostnameFlags });
 });
 
 // --- Per-instance VPN settings (server selection) ---
