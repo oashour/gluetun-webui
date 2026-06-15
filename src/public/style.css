@@ -312,6 +312,7 @@ main {
   white-space: nowrap;
   max-width: 65%;
 }
+.sel-summary-any { color: var(--muted); }
 
 .server-select { width: 100%; min-width: 0; }
 .server-select:disabled { opacity: 0.45; cursor: not-allowed; }

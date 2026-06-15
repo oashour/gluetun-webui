@@ -355,7 +355,8 @@ function updateSelSummary(instanceId, level) {
   const summary = $(`i${instanceId}-sel-${level}-summary`);
   if (!el || !summary) return;
   const selected = [...el.selectedOptions].map(o => o.value);
-  summary.textContent = selected.length ? selected.join(', ') : '';
+  summary.textContent = selected.length ? selected.join(', ') : 'Any';
+  summary.classList.toggle('sel-summary-any', !selected.length);
 }
 
 function getHostnamesForCity(data, city) {
