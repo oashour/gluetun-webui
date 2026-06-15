@@ -7,6 +7,7 @@ const app = express();
 app.set('trust proxy', process.env.TRUST_PROXY === 'true');
 app.disable('x-powered-by');
 const PORT = process.env.PORT || 3000;
+const SERVERS_JSON_PATH = process.env.SERVERS_JSON_PATH || '/gluetun/servers.json';
 
 // --- Docker Secrets Support ---
 // Try to read from /run/secrets/ (Docker Swarm/Compose secrets), fall back to env vars
@@ -147,6 +148,32 @@ async function gluetunFetch(instance, endpoint, method = 'GET', body = null) {
   }
 }
 
+async function gluetunFetchText(instance, endpoint, method = 'GET', body = null) {
+  const url = `${instance.url}${endpoint}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const opts = {
+    method,
+    signal: controller.signal,
+    redirect: 'error',
+    headers: {
+      ...(body !== null ? { 'Content-Type': 'application/json' } : {}),
+      ...buildAuthHeadersFor(instance),
+    },
+  };
+  if (body !== null) opts.body = JSON.stringify(body);
+  try {
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Gluetun returned ${res.status}${text ? ': ' + text.slice(0, 200).trim() : ''}`);
+    }
+    return res.text();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // --- Helper: aggregate health for one instance ---
 // Returns { timestamp, vpnStatus, publicIp, portForwarded, dnsStatus, vpnSettings, allFailed }
 // allFailed = true if ALL 5 checks failed (service is completely unreachable)
@@ -260,6 +287,90 @@ const staticLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, error: 'Too many requests, please try again later.' },
+});
+
+// --- Per-instance server list (reads servers.json from disk) ---
+app.get('/api/:instanceId/servers', async (req, res) => {
+  const instance = resolveInstance(req.params.instanceId);
+  if (!instance) return res.status(400).json({ ok: false, error: 'Unknown instance ID' });
+
+  let settings;
+  try {
+    settings = await gluetunFetch(instance, '/v1/vpn/settings');
+  } catch (err) {
+    console.error(`[upstream][${instance.id}]`, err.message);
+    return res.status(502).json({ ok: false, error: 'Upstream error' });
+  }
+
+  const providerName = settings?.provider?.name;
+  const vpnType = settings?.type;
+
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(SERVERS_JSON_PATH, 'utf8'));
+  } catch (err) {
+    const missing = err.code === 'ENOENT';
+    console.error('[servers]', err.message);
+    return res.status(missing ? 404 : 500).json({
+      ok: false,
+      error: missing
+        ? `servers.json not found at ${SERVERS_JSON_PATH}. Mount it from your gluetun container and set SERVERS_JSON_PATH if needed.`
+        : 'Failed to read servers.json',
+    });
+  }
+
+  const allServers = raw[providerName]?.servers ?? [];
+  const servers = vpnType
+    ? allServers.filter(s => s.vpn === vpnType)
+    : allServers;
+
+  const countryMap = new Map();
+  for (const s of servers) {
+    const country = s.country ?? '';
+    const city = s.city ?? '';
+    const hostname = s.hostname ?? '';
+    if (!country || !hostname) continue;
+    if (!countryMap.has(country)) countryMap.set(country, new Map());
+    const cityMap = countryMap.get(country);
+    if (!cityMap.has(city)) cityMap.set(city, []);
+    cityMap.get(city).push(hostname);
+  }
+
+  const byCountry = {};
+  const countries = [...countryMap.keys()].sort();
+  for (const country of countries) {
+    const cityMap = countryMap.get(country);
+    const cities = [...cityMap.keys()].sort();
+    const byCity = {};
+    for (const city of cities) {
+      byCity[city] = cityMap.get(city).sort();
+    }
+    byCountry[country] = { cities, byCity };
+  }
+
+  res.json({ ok: true, provider: providerName, countries, byCountry });
+});
+
+// --- Per-instance VPN settings (server selection) ---
+// Must be registered BEFORE /vpn/:action to prevent Express matching 'settings' as :action
+app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
+  const instance = resolveInstance(req.params.instanceId);
+  if (!instance) return res.status(400).json({ ok: false, error: 'Unknown instance ID' });
+
+  const { countries = [], cities = [], hostnames = [] } = req.body ?? {};
+  const isStrArr = v => Array.isArray(v) && v.every(x => typeof x === 'string');
+  if (!isStrArr(countries) || !isStrArr(cities) || !isStrArr(hostnames)) {
+    return res.status(400).json({ ok: false, error: 'countries, cities, and hostnames must each be arrays of strings' });
+  }
+
+  const upstream = { provider: { server_selection: { countries, cities, hostnames } } };
+  try {
+    const text = await gluetunFetchText(instance, '/v1/vpn/settings', 'PUT', upstream);
+    res.json({ ok: true, message: text });
+  } catch (err) {
+    console.error(`[upstream][${instance.id}]`, err.message);
+    res.status(502).json({ ok: false, error: 'Upstream error' });
+  }
 });
 
 // --- Per-instance VPN control ---

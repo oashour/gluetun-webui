@@ -19,6 +19,11 @@ services:
       #- GLUETUN_PASSWORD=password
       # Set to 'true' if behind a reverse proxy (nginx, Traefik, etc.)
       #- TRUST_PROXY=false
+      # Path to gluetun's servers.json (required for the Server Selector panel).
+      # Mount the file from your gluetun data volume (read-only) and point to it:
+      #- SERVERS_JSON_PATH=/gluetun/servers.json
+    # volumes:
+    #   - /path/to/gluetun/data/servers.json:/gluetun/servers.json:ro
     
     networks:
       - gluetun-stack

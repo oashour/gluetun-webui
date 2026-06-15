@@ -289,6 +289,26 @@ main {
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { display: inline-block; animation: spin 1s linear infinite; }
 
+/* ---- Server Selector card ---- */
+.selector-row { align-items: center; }
+
+.server-select {
+  flex: 1;
+  max-width: 62%;
+  min-width: 0;
+}
+.server-select:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.server-selector-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.4rem;
+}
+
+.btn-apply { border-color: var(--blue); color: var(--blue); }
+.btn-apply:hover:not(:disabled) { background: rgba(96,165,250,0.15); }
+.btn-apply:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /* ---- Responsive ---- */
 @media (max-width: 600px) {
   .header-inner { flex-direction: column; align-items: flex-start; }

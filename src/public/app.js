@@ -6,6 +6,7 @@ const VALID_STATES = new Set(['connected', 'paused', 'disconnected', 'unknown'])
 let instances    = [];   // [{ id, name }] from /api/instances
 let isPolling    = false;
 let refreshTimer = null;
+const serverDataCache = new Map(); // instanceId -> server data from /api/:id/servers
 
 // ---- Utility ----
 
@@ -132,6 +133,41 @@ function buildDashboardGroup(inst) {
         </div>
       </div>
 
+      <!-- Server Selector card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-icon">&#128205;</span>
+          <h3>Server Selector</h3>
+        </div>
+        <div class="card-body">
+          <div class="stat-row">
+            <span class="stat-label">Provider</span>
+            <span class="stat-value" id="i${id}-sel-provider">–</span>
+          </div>
+          <div class="stat-row selector-row">
+            <span class="stat-label">Country</span>
+            <select id="i${id}-sel-country" class="server-select" disabled>
+              <option value="">Loading…</option>
+            </select>
+          </div>
+          <div class="stat-row selector-row">
+            <span class="stat-label">City</span>
+            <select id="i${id}-sel-city" class="server-select" disabled>
+              <option value="">–</option>
+            </select>
+          </div>
+          <div class="stat-row selector-row">
+            <span class="stat-label">Server</span>
+            <select id="i${id}-sel-hostname" class="server-select" disabled>
+              <option value="">–</option>
+            </select>
+          </div>
+          <div class="server-selector-footer">
+            <button id="i${id}-sel-apply" class="btn-apply" disabled>Apply</button>
+          </div>
+        </div>
+      </div>
+
       <!-- History card -->
       <div class="card card-wide">
         <div class="card-header">
@@ -152,6 +188,9 @@ function buildDashboardGroup(inst) {
   `;
   group.querySelector(`#i${id}-btn-start`).addEventListener('click', () => vpnAction(id, 'start'));
   group.querySelector(`#i${id}-btn-stop`).addEventListener('click', () => vpnAction(id, 'stop'));
+  group.querySelector(`#i${id}-sel-country`).addEventListener('change', () => onCountryChange(id));
+  group.querySelector(`#i${id}-sel-city`).addEventListener('change', () => onCityChange(id));
+  group.querySelector(`#i${id}-sel-apply`).addEventListener('click', () => applyServerSelection(id));
   return group;
 }
 
@@ -208,6 +247,7 @@ function updatePanel(inst, health) {
 
   setEl(`i${id}-vpn-status`,   d?.status ?? '–');
   setEl(`i${id}-vpn-provider`, s?.provider?.name ?? '–');
+  if (s?.provider?.name) loadServerData(id, s.provider.server_selection ?? {});
   setEl(`i${id}-vpn-protocol`, s?.type ?? '–');
   setEl(`i${id}-vpn-server`,
     ip?.hostname
@@ -298,6 +338,129 @@ async function vpnAction(instanceId, action) {
     }
   } catch (err) {
     showToast(`${name}: Request failed: ${err.message}`, 'error', 5000);
+  }
+}
+
+// ---- Server selector ----
+
+function onCountryChange(instanceId) {
+  const data       = serverDataCache.get(instanceId);
+  const cityEl     = $(`i${instanceId}-sel-city`);
+  const hostnameEl = $(`i${instanceId}-sel-hostname`);
+  const country    = $(`i${instanceId}-sel-country`)?.value ?? '';
+
+  cityEl.innerHTML     = '<option value="">Any</option>';
+  hostnameEl.innerHTML = '<option value="">Any</option>';
+
+  if (data && country && data.byCountry[country]) {
+    data.byCountry[country].cities.forEach(c => cityEl.appendChild(new Option(c, c)));
+  }
+
+  if (cityEl._preselectValue) {
+    cityEl.value = cityEl._preselectValue;
+    delete cityEl._preselectValue;
+    onCityChange(instanceId);
+  }
+}
+
+function onCityChange(instanceId) {
+  const data       = serverDataCache.get(instanceId);
+  const hostnameEl = $(`i${instanceId}-sel-hostname`);
+  const country    = $(`i${instanceId}-sel-country`)?.value ?? '';
+  const city       = $(`i${instanceId}-sel-city`)?.value ?? '';
+
+  hostnameEl.innerHTML = '<option value="">Any</option>';
+
+  if (data && country && city && data.byCountry[country]?.byCity[city]) {
+    data.byCountry[country].byCity[city].forEach(h => hostnameEl.appendChild(new Option(h, h)));
+  }
+
+  if (hostnameEl._preselectValue) {
+    hostnameEl.value = hostnameEl._preselectValue;
+    delete hostnameEl._preselectValue;
+  }
+}
+
+function populateServerSelector(instanceId, data, currentSel) {
+  const providerEl  = $(`i${instanceId}-sel-provider`);
+  const countryEl   = $(`i${instanceId}-sel-country`);
+  const cityEl      = $(`i${instanceId}-sel-city`);
+  const hostnameEl  = $(`i${instanceId}-sel-hostname`);
+  const applyBtn    = $(`i${instanceId}-sel-apply`);
+
+  if (providerEl) providerEl.textContent = data.provider ?? '–';
+
+  countryEl.innerHTML = '<option value="">Any</option>';
+  data.countries.forEach(c => countryEl.appendChild(new Option(c, c)));
+
+  const preCountry  = currentSel.countries?.[0] ?? '';
+  const preCity     = currentSel.cities?.[0]    ?? '';
+  const preHostname = currentSel.hostnames?.[0] ?? '';
+
+  if (preCountry && data.byCountry[preCountry]) {
+    countryEl.value = preCountry;
+    cityEl._preselectValue     = preCity;
+    hostnameEl._preselectValue = preHostname;
+  }
+
+  [countryEl, cityEl, hostnameEl].forEach(el => { el.disabled = false; });
+  if (applyBtn) applyBtn.disabled = false;
+
+  onCountryChange(instanceId);
+}
+
+async function loadServerData(instanceId, currentSel) {
+  if (serverDataCache.has(instanceId)) {
+    populateServerSelector(instanceId, serverDataCache.get(instanceId), currentSel);
+    return;
+  }
+  try {
+    const res  = await fetch(`/api/${instanceId}/servers`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error ?? 'Failed to load server list');
+    serverDataCache.set(instanceId, data);
+    populateServerSelector(instanceId, data, currentSel);
+  } catch (err) {
+    const el = $(`i${instanceId}-sel-country`);
+    if (el) el.innerHTML = '<option value="">Unavailable</option>';
+    console.warn(`[server-selector][${instanceId}]`, err.message);
+  }
+}
+
+async function applyServerSelection(instanceId) {
+  const countryEl  = $(`i${instanceId}-sel-country`);
+  const cityEl     = $(`i${instanceId}-sel-city`);
+  const hostnameEl = $(`i${instanceId}-sel-hostname`);
+  const applyBtn   = $(`i${instanceId}-sel-apply`);
+  const inst       = instances.find(i => i.id === instanceId);
+  const name       = inst?.name ?? instanceId;
+
+  const countries = countryEl?.value  ? [countryEl.value]  : [];
+  const cities    = cityEl?.value     ? [cityEl.value]     : [];
+  const hostnames = hostnameEl?.value ? [hostnameEl.value] : [];
+
+  applyBtn.disabled    = true;
+  applyBtn.textContent = 'Applying…';
+  showToast(`${name}: Applying server selection…`, 'info', 8000);
+
+  try {
+    const res  = await fetch(`/api/${instanceId}/vpn/settings`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ countries, cities, hostnames }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`${name}: Server selection applied`, 'success');
+      setTimeout(async () => { await pollAll(); scheduleNextPoll(); }, 3000);
+    } else {
+      showToast(`${name}: ${data.error ?? 'Unknown error'}`, 'error', 5000);
+    }
+  } catch (err) {
+    showToast(`${name}: Request failed: ${err.message}`, 'error', 5000);
+  } finally {
+    applyBtn.disabled    = false;
+    applyBtn.textContent = 'Apply';
   }
 }
 
