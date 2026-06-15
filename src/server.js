@@ -519,9 +519,11 @@ app.put('/api/:instanceId/vpn/settings', vpnActionLimiter, async (req, res) => {
   if (providerIndex !== null) {
     const cfg = (providerConfigs.get(instance.id) ?? []).find(p => p.index === providerIndex);
     if (!cfg) return res.status(400).json({ ok: false, error: 'Provider not found' });
-    const wireguard = { private_key: cfg.wgKey };
-    if (cfg.wgAddresses) wireguard.addresses = cfg.wgAddresses.split(',').map(s => s.trim());
-    if (cfg.wgPsk != null) wireguard.pre_shared_key = cfg.wgPsk;
+    const wireguard = {
+      private_key: cfg.wgKey,
+      addresses: cfg.wgAddresses ? cfg.wgAddresses.split(',').map(s => s.trim()) : [],
+      pre_shared_key: cfg.wgPsk ?? '',
+    };
     upstream = {
       type: 'wireguard',
       provider: { name: cfg.providerName, server_selection: { vpn: 'wireguard', ...geoSels, hostnames, ...booleans } },
