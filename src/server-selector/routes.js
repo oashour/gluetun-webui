@@ -9,6 +9,15 @@ const SERVERS_JSON_PATH = process.env.SERVERS_JSON_PATH || '/gluetun/servers.jso
 const GEO_PLURAL_FIELDS = ['regions', 'countries', 'cities'];
 const ALLOWED_BOOL_KEYS = new Set(BOOLEAN_FILTER_MAP.map(f => f.key));
 
+let _serversCache = { mtimeMs: 0, data: null };
+function readServersJson() {
+  const { mtimeMs } = fs.statSync(SERVERS_JSON_PATH);
+  if (mtimeMs !== _serversCache.mtimeMs) {
+    _serversCache = { mtimeMs, data: JSON.parse(fs.readFileSync(SERVERS_JSON_PATH, 'utf8')) };
+  }
+  return _serversCache.data;
+}
+
 function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFor, vpnActionLimiter }) {
   async function gluetunFetchText(instance, endpoint, method = 'GET', body = null) {
     const url = `${instance.url}${endpoint}`;
@@ -63,15 +72,13 @@ function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFo
 
     let raw;
     try {
-      raw = JSON.parse(fs.readFileSync(SERVERS_JSON_PATH, 'utf8'));
+      raw = readServersJson();
     } catch (err) {
       const missing = err.code === 'ENOENT';
-      console.error('[servers]', err.message);
+      console.error('[servers]', missing ? `servers.json not found at ${SERVERS_JSON_PATH}` : err.message);
       return res.status(missing ? 404 : 500).json({
         ok: false,
-        error: missing
-          ? `servers.json not found at ${SERVERS_JSON_PATH}. Mount it from your gluetun container and set SERVERS_JSON_PATH if needed.`
-          : 'Failed to read servers.json',
+        error: missing ? 'servers.json not found — check SERVERS_JSON_PATH' : 'Failed to read servers.json',
       });
     }
 
@@ -167,8 +174,8 @@ function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFo
     }
 
     try {
-      const text = await gluetunFetchText(instance, '/v1/vpn/settings', 'PUT', upstream);
-      res.json({ ok: true, message: text });
+      await gluetunFetchText(instance, '/v1/vpn/settings', 'PUT', upstream);
+      res.json({ ok: true });
     } catch (err) {
       console.error(`[upstream][${instance.id}]`, err.message);
       res.status(502).json({ ok: false, error: 'Upstream error' });
