@@ -147,6 +147,17 @@ async function gluetunFetch(instance, endpoint, method = 'GET', body = null) {
   }
 }
 
+function sanitizeVpnSettings(s) {
+  if (!s || typeof s !== 'object') return s;
+  return {
+    type: s.type,
+    provider: {
+      name: s.provider?.name,
+      server_selection: s.provider?.server_selection,
+    },
+  };
+}
+
 // --- Helper: aggregate health for one instance ---
 // Returns { timestamp, vpnStatus, publicIp, portForwarded, dnsStatus, vpnSettings, allFailed }
 // allFailed = true if ALL 5 checks failed (service is completely unreachable)
@@ -159,9 +170,12 @@ async function fetchInstanceHealth(instance) {
     gluetunFetch(instance, '/v1/vpn/settings'),
   ]);
   results.forEach(r => { if (r.status === 'rejected') console.error(`[upstream][${instance.id}]`, r.reason?.message); });
-  const [vpnStatus, publicIp, portForwarded, dnsStatus, vpnSettings] = results.map(r =>
+  const [vpnStatus, publicIp, portForwarded, dnsStatus, rawVpnSettings] = results.map(r =>
     r.status === 'fulfilled' ? { ok: true, data: r.value } : { ok: false, error: 'Upstream error' }
   );
+  const vpnSettings = rawVpnSettings.ok
+    ? { ok: true, data: sanitizeVpnSettings(rawVpnSettings.data) }
+    : rawVpnSettings;
   const allFailed = results.every(r => r.status === 'rejected');
   return { timestamp: new Date().toISOString(), vpnStatus, publicIp, portForwarded, dnsStatus, vpnSettings, allFailed };
 }
@@ -226,7 +240,7 @@ app.get('/api/portforwarded', async (req, res) => {
 
 app.get('/api/settings', async (req, res) => {
   try {
-    const data = await gluetunFetch(instances[0], '/v1/vpn/settings');
+    const data = sanitizeVpnSettings(await gluetunFetch(instances[0], '/v1/vpn/settings'));
     res.json({ ok: true, data });
   } catch (err) {
     console.error('[upstream]', err.message);
