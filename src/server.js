@@ -1,7 +1,6 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const fs = require('fs');
 
 const { getConfigValue } = require('./config');
 

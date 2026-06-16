@@ -6,6 +6,8 @@ const {
 const { providerConfigs } = require('./providers');
 
 const SERVERS_JSON_PATH = process.env.SERVERS_JSON_PATH || '/gluetun/servers.json';
+const GEO_PLURAL_FIELDS = ['regions', 'countries', 'cities'];
+const ALLOWED_BOOL_KEYS = new Set(BOOLEAN_FILTER_MAP.map(f => f.key));
 
 function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFor, vpnActionLimiter }) {
   async function gluetunFetchText(instance, endpoint, method = 'GET', body = null) {
@@ -87,25 +89,16 @@ function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFo
       .map(({ key, label }) => ({ key, label }));
 
     const hostnameFlags = {};
+    const hostnameLabels = {};
+    const hostnameIsps = {};
+    const ispSet = new Set();
     for (const s of servers) {
       if (!s.hostname) continue;
       const flags = BOOLEAN_FILTER_MAP.filter(({ field }) => s[field]).map(({ key }) => key);
       if (flags.length) hostnameFlags[s.hostname] = flags;
-    }
-
-    const hostnameLabels = {};
-    for (const s of servers) {
-      if (!s.hostname) continue;
-      const prefix = s.server_name ?? s.name ?? (s.number != null ? String(s.number) : null);
-      if (prefix) hostnameLabels[s.hostname] = `${prefix} (${s.hostname})`;
-    }
-
-    const hostnameIsps = {};
-    const ispSet = new Set();
-    for (const s of servers) {
-      if (!s.hostname || !s.isp) continue;
-      hostnameIsps[s.hostname] = s.isp;
-      ispSet.add(s.isp);
+      const labelPrefix = s.server_name ?? s.name ?? (s.number != null ? String(s.number) : null);
+      if (labelPrefix) hostnameLabels[s.hostname] = `${labelPrefix} (${s.hostname})`;
+      if (s.isp) { hostnameIsps[s.hostname] = s.isp; ispSet.add(s.isp); }
     }
     const isps = [...ispSet].sort();
 
@@ -120,7 +113,6 @@ function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFo
 
     const body = req.body ?? {};
     const isStrArr = v => Array.isArray(v) && v.every(x => typeof x === 'string');
-    const GEO_PLURAL_FIELDS = ['regions', 'countries', 'cities'];
     const geoSels = {};
     for (const field of GEO_PLURAL_FIELDS) {
       const val = body[field] ?? [];
@@ -130,10 +122,9 @@ function registerRoutes(app, { resolveInstance, gluetunFetch, buildAuthHeadersFo
     const hostnames = body.hostnames ?? [];
     if (!isStrArr(hostnames)) return res.status(400).json({ ok: false, error: 'hostnames must be an array of strings' });
     const booleans = body.booleans ?? {};
-    const allowedBoolKeys = new Set(BOOLEAN_FILTER_MAP.map(f => f.key));
     if (
       typeof booleans !== 'object' || Array.isArray(booleans) || booleans === null ||
-      Object.entries(booleans).some(([k, v]) => !allowedBoolKeys.has(k) || typeof v !== 'boolean')
+      Object.entries(booleans).some(([k, v]) => !ALLOWED_BOOL_KEYS.has(k) || typeof v !== 'boolean')
     ) {
       return res.status(400).json({ ok: false, error: 'Invalid booleans object' });
     }

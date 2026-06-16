@@ -57,7 +57,7 @@ function parseProviders(prefix) {
 // numbered instance (prefix GLUETUN_{id}), otherwise it's the legacy fallback (prefix GLUETUN).
 function parseAllProviders({ instances }) {
   for (const { id } of instances) {
-    const prefix = process.env[`GLUETUN_${id}_URL`] ? `GLUETUN_${id}` : 'GLUETUN';
+    const prefix = getConfigValue(`GLUETUN_${id}_URL`, `gluetun_${id}_url`) ? `GLUETUN_${id}` : 'GLUETUN';
     providerConfigs.set(id, parseProviders(prefix));
   }
 }

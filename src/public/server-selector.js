@@ -76,7 +76,6 @@ export function initServerSelectorCard(inst, groupEl, callbacks) {
 
 // Called from updatePanel when inst.serverSelector is true and settings data is available.
 export function syncFromHealth(inst, settingsData) {
-  instanceRegistry.set(inst.id, inst);
   const id = inst.id;
   const provSel = $(`i${id}-sel-provider`);
   if (provSel?.tagName === 'SELECT') {
